@@ -10,11 +10,19 @@ classify(target) -> scheme, host, risky flag
 
 mismatch(text, target) -> reason or None
     The words a viewer sees on a link point somewhere else:
-      "userinfo"          the text shows a host before "@" (https://bank.com@evil.io), unless the
-                          target is mailto:
+      "userinfo"          the text shows a host before "@" (https://bank.com@evil.io,
+                          paypal.com@evil.io), unless the target is mailto:; a person's
+                          address (jane.doe@corp.com) is not a host
       "no_web_host"       the text shows a domain but the target is not an http(s) or mailto URL
       "different_domain"  the first domain in the text is not the target's site
-      "invisible_chars"   the text contains zero-width, bidi or other format characters
+      "invisible_chars"   the text contains zero-width, bidi or other format characters, or
+                          blank-looking letters (Hangul fillers U+115F, U+1160, U+3164, U+FFA0;
+                          U+034F; Khmer U+17B4, U+17B5)
+      "mixed_script"      a shown domain label mixes scripts (Cyrillic "а" inside "pаypal")
+    E-mail addresses are parsed before domains, so "jane.doe@corp.com" is one address at
+    corp.com, not a domain "jane.doe". With a mailto: target the shown address domains must
+    match the target's; with a web target the shown domains must.
+    Domain labels may be non-ASCII ("ペイパル.com", "bücher.de"); they are compared in IDNA form.
     Text is NFKC-normalized, full-width and ideographic dots count as dots, and hosts are
     compared in IDNA form without a trailing dot. "Site" uses a short built-in list of
     multi-label suffixes (co.uk, gov.pk, github.io ...), not the full Public Suffix List; a
@@ -27,13 +35,18 @@ from urllib.parse import urlsplit
 
 SAFE_SCHEMES = {"http", "https", "mailto"}
 _DOTS = str.maketrans({"\u3002": ".", "\uff0e": ".", "\uff61": "."})
-_INVISIBLE = re.compile("[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]")
-_DOMAIN = re.compile(r"(?<![\w@.-])((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62})\.?(?![\w-])",
-                     re.I)
+_INVISIBLE = re.compile("[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180e\u200b-\u200f\u202a-\u202e"
+                        "\u2060-\u2064\u2066-\u2069\u3164\ufeff\uffa0]")
+# Labels are Unicode word characters, so non-Latin look-alikes are seen too.
+_LABEL = r"[^\W_](?:[\w-]{0,61}[^\W_])?"
+_DOMAIN = re.compile(r"(?<![\w@.-])((?:%s\.)+[^\W\d_][\w-]{0,62})\.?(?![\w-])" % _LABEL)
+_EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@((?:%s\.)+[^\W\d_][\w-]{0,62})(?![\w-])" % _LABEL)
 _USERINFO = re.compile(r"(?:(https?|ftp)://)?([^\s/@]+)@([a-z0-9.-]+\.[a-z]{2,})", re.I)
 # Text that looks like a file name, not a site ("report.pptx", "logo.png").
 _FILE_TLDS = {"ppt", "pptx", "pptm", "ppsx", "potx", "doc", "docx", "xls", "xlsx", "pdf", "txt", "csv",
               "png", "jpg", "jpeg", "gif", "svg", "zip", "md", "json", "xml", "htm", "html", "py", "js", "mp4"}
+_COMMON_TLDS = {"com", "net", "org", "io", "gov", "edu", "mil", "int", "info", "biz", "app", "dev", "xyz",
+                "online", "site", "shop", "bank", "cloud", "ai", "me", "tv", "co"}
 SUFFIXES = {
     "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "com.au", "net.au", "org.au", "gov.au", "edu.au",
     "co.nz", "org.nz", "govt.nz", "ac.nz", "co.jp", "ne.jp", "or.jp", "ac.jp", "go.jp", "co.kr", "go.kr",
@@ -99,6 +112,23 @@ def classify(target):
     return scheme, host, scheme not in SAFE_SCHEMES
 
 
+def _script(ch):
+    name = unicodedata.name(ch, "")
+    first = name.split(" ", 1)[0]
+    if first in ("HIRAGANA", "KATAKANA", "CJK", "HANGUL"):
+        return "CJK"  # Japanese and Korean mix these in one word normally
+    return first
+
+
+def mixed_script(domain):
+    """True when one label mixes letters from more than one script (pаypal with Cyrillic а)."""
+    for label in domain.split("."):
+        scripts = {_script(c) for c in label if c.isalpha()}
+        if len(scripts) > 1:
+            return True
+    return False
+
+
 def mismatch(text, target):
     raw = text or ""
     if _INVISIBLE.search(raw) or any(unicodedata.category(c) == "Cf" for c in raw):
@@ -113,16 +143,33 @@ def mismatch(text, target):
     if scheme != "mailto":
         for m in _USERINFO.finditer(t):
             user, after = m.group(2), m.group(3)
-            looks_host = "." in user and user.rsplit(".", 1)[-1].lower() not in _FILE_TLDS
-            if m.group(1) or (looks_host and not (host and same_site(after, host))):
+            if m.group(1):
                 return "userinfo"
-    shown = [d for d in _DOMAIN.findall(t) if d.rsplit(".", 1)[-1].lower() not in _FILE_TLDS]
+            # "paypal.com@evil.io" reads as paypal.com; "jane.doe@corp.com" reads as a person.
+            last = user.rsplit(".", 1)[-1].lower() if "." in user else ""
+            looks_host = last in _COMMON_TLDS or (len(last) == 2 and last.isalpha())
+            if looks_host and not (host and same_site(user, host)):
+                return "userinfo"
+    # E-mail addresses first: their domains count, their local parts never do.
+    mail_domains = _EMAIL.findall(t)
+    rest = _EMAIL.sub(" ", t)
+    shown = [d for d in _DOMAIN.findall(rest) if d.rsplit(".", 1)[-1].lower() not in _FILE_TLDS]
+    if any(mixed_script(d) for d in shown + mail_domains):
+        return "mixed_script"
+    if scheme == "mailto":
+        if not host:
+            return "no_web_host" if (shown or mail_domains) else None
+        for d in mail_domains or shown[:1]:
+            if not same_site(d, host):
+                return "different_domain"
+        return None
+    if mail_domains and not shown:
+        # an address shown over a web or file link: compare its domain with the target
+        shown = mail_domains
     if not shown:
         return None
     if scheme not in SAFE_SCHEMES or not host:
         return "no_web_host"
-    if scheme == "mailto":
-        return None if same_site(shown[-1], host) or same_site(shown[0], host) else "different_domain"
     if not same_site(shown[0], host):
         return "different_domain"
     return None

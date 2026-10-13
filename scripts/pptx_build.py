@@ -30,6 +30,10 @@ Template slides are removed completely (as pptx_slides.py --delete does), with t
 sections, unless --keep-template-slides. Placeholders left empty show "Click to add ..." while editing (not in
 the show); --remove-empty deletes them. Spec text with control, bidi or zero-width characters
 is refused.
+Image paths must be relative and stay inside the spec's folder (realpath checked), so a spec
+cannot pull an arbitrary file into the deck; --allow-image-outside lifts this after asking.
+OUT may not be the template, the spec or a symlink, even with --force. Errors from python-pptx
+or the image library come back as exit 2 with a message, not a traceback.
 
 Exit codes: 0 written, 1 spec does not fit the template (unknown layout or placeholder idx,
 nothing written), 2 python-pptx missing, bad spec, unsupported template, output exists,
@@ -61,12 +65,14 @@ def load_template(path, work):
         shutil.copyfile(path, copy)
         return copy
     want = "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"
+    ct = pkg.ct  # parsed [Content_Types].xml; change only the Override for the main part
+    for o in ct.findall("ct:Override", pk.NS):
+        if o.get("PartName", "").lstrip("/") == pkg.main:
+            o.set("ContentType", want)
+    data_ct = pk.etree.tostring(ct, xml_declaration=True, encoding="UTF-8", standalone=True)
     with zipfile.ZipFile(path) as zin, zipfile.ZipFile(copy, "w", zipfile.ZIP_DEFLATED) as zout:
         for info in zin.infolist():
-            data = zin.read(info.filename)
-            if info.filename == "[Content_Types].xml":
-                ct = pkg.content_type(pkg.main)
-                data = data.replace(ct.encode(), want.encode())
+            data = data_ct if info.filename == "[Content_Types].xml" else zin.read(info.filename)
             zout.writestr(info, data)
     return copy
 
@@ -91,11 +97,36 @@ def fill_text(tf, value, where):
     paras = value if isinstance(value, list) else [value]
     tf.clear()  # leaves one empty paragraph that keeps the placeholder's formatting
     for i, item in enumerate(paras):
-        text, level = (item, 0) if isinstance(item, str) else (item.get("text", ""), int(item.get("level", 0)))
+        if isinstance(item, str):
+            text, level = item, 0
+        elif isinstance(item, dict):
+            text, level = item.get("text", ""), item.get("level", 0)
+            if not isinstance(text, str) or not isinstance(level, int) or isinstance(level, bool):
+                raise pk.Unsupported("%s: text must be a string and level an integer 0-8" % where)
+        else:
+            raise pk.Unsupported("%s: a paragraph must be a string or {\"text\", \"level\"}" % where)
         check(text, where)
         p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
         p.text = text
         p.level = max(0, min(level, 8))
+
+
+def image_path(base, rel, allow_outside, n):
+    """Images must sit in the spec's folder or below it, so a spec cannot pull an arbitrary
+    file from disk into a deck that will be shared. --allow-image-outside lifts this."""
+    if not isinstance(rel, str) or not rel:
+        raise pk.Unsupported("slide %d: image must be a path string" % n)
+    if not allow_outside and (os.path.isabs(rel) or rel.startswith("~")):
+        raise pk.Unsupported("slide %d: image path must be relative to the spec folder: %s "
+                             "(--allow-image-outside to permit)" % (n, rel))
+    path = os.path.realpath(os.path.join(base, rel))
+    root = os.path.realpath(base)
+    if not allow_outside and os.path.commonpath([path, root]) != root:
+        raise pk.Unsupported("slide %d: image is outside the spec folder: %s "
+                             "(--allow-image-outside to permit)" % (n, rel))
+    if not os.path.isfile(path):
+        raise pk.Unsupported("slide %d: image not found: %s" % (n, rel))
+    return path
 
 
 def build(a):
@@ -105,7 +136,10 @@ def build(a):
         raise pk.Unsupported("python-pptx is not installed: pip install python-pptx")
     with tempfile.TemporaryDirectory(prefix="pptx-build-") as work:
         tpl = load_template(a.template, work)
-        prs = Presentation(tpl)
+        try:
+            prs = Presentation(tpl)
+        except Exception as exc:
+            raise pk.Unsupported("python-pptx cannot open the template: %s" % pk.clean_text(str(exc), 200))
         lays = layouts_of(prs)
         if a.list_layouts:
             return {"ok": True, "template": a.template,
@@ -144,12 +178,14 @@ def build(a):
                     raise SpecError("slide %d (%s): no placeholder idx %d; have %s" % (n, lay["name"], idx, sorted(have)))
                 ph = have[idx]
                 if isinstance(value, dict) and "image" in value:
-                    img = os.path.join(base, value["image"])
+                    img = image_path(base, value["image"], a.allow_image_outside, n)
                     if not hasattr(ph, "insert_picture"):
                         raise SpecError("slide %d: placeholder idx %d is not a picture placeholder" % (n, idx))
-                    if not os.path.isfile(img):
-                        raise pk.Unsupported("slide %d: image not found: %s" % (n, value["image"]))
-                    ph.insert_picture(img)
+                    try:
+                        ph.insert_picture(img)
+                    except Exception as exc:  # PIL and python-pptx raise many types for bad images
+                        raise pk.Unsupported("slide %d: cannot use image %s: %s"
+                                             % (n, value["image"], pk.clean_text(str(exc), 200)))
                 else:
                     if not ph.has_text_frame:
                         raise SpecError("slide %d: placeholder idx %d holds no text" % (n, idx))
@@ -168,8 +204,12 @@ def build(a):
             report.append({"index": n, "layout": lay["name"], "filled": sorted(filled),
                            "empty": [] if a.remove_empty else empty, "hidden": bool(item.get("hidden"))})
         stage = os.path.join(work, "stage.pptx")
-        prs.save(stage)
+        try:
+            prs.save(stage)
+        except Exception as exc:
+            raise pk.Unsupported("python-pptx could not save the deck: %s" % pk.clean_text(str(exc), 200))
         pkg = pk.Package(stage)
+        pkg.protect = (a.template, a.spec)  # save() refuses these as OUT even with --force
         log = []
         if not a.keep_template_slides and old_ids:
             gone = [s for s in pkg.slides() if s["id"] in {str(i) for i in old_ids}]
@@ -198,6 +238,8 @@ def main(argv=None):
     ap.add_argument("--list-layouts", action="store_true")
     ap.add_argument("--keep-template-slides", action="store_true")
     ap.add_argument("--remove-empty", action="store_true")
+    ap.add_argument("--allow-image-outside", action="store_true",
+                    help="allow image paths outside the spec folder (ask the user first)")
     ap.add_argument("--force", action="store_true", help="replace OUT if it exists (no backup)")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
@@ -207,6 +249,7 @@ def main(argv=None):
                 raise pk.Unsupported("give TEMPLATE SPEC.json OUT.pptx, or --list-layouts TEMPLATE")
             if not a.output.lower().endswith(".pptx"):
                 raise pk.Unsupported("OUT must end in .pptx")
+            pk.check_output(a.output, a.template, a.spec)
             if os.path.exists(a.output) and not a.force:
                 raise pk.Unsupported("output exists: %s" % a.output)
         res = build(a)

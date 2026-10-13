@@ -182,6 +182,20 @@ def check_zip(zf):
     return infos
 
 
+def check_output(out_path, *inputs):
+    """Refuse an output that is a symlink or the same file as any input (realpath and samefile,
+    so a link or a different spelling of the path is caught too). Applies even with --force."""
+    if os.path.islink(out_path):
+        raise Unsupported("output is a symbolic link: %s; write to a new path" % out_path)
+    real = os.path.realpath(out_path)
+    for src in inputs:
+        if not src:
+            continue
+        if os.path.realpath(src) == real or (os.path.exists(out_path) and os.path.exists(src)
+                                             and os.path.samefile(src, out_path)):
+            raise Unsupported("output is the input file (%s); write to a new path" % src)
+
+
 class Package:
     """Read-only view of a presentation package, with edits kept in memory until save()."""
 
@@ -344,11 +358,12 @@ class Package:
         self.set_xml(name, root)
 
     def save(self, out_path, force=False):
+        """Write to a new file. Refuses OUT that is a symlink or the same file as the input (or
+        any path in self.protect), even with force."""
         out_path = os.path.abspath(out_path)
         if os.path.exists(out_path) and not force:
             raise Unsupported("output exists: %s (use --force to replace it, no backup is kept)" % out_path)
-        if os.path.abspath(self.path) == out_path:
-            raise Unsupported("output is the input file; write to a new path")
+        check_output(out_path, self.path, *getattr(self, "protect", ()))
         ext = os.path.splitext(out_path)[1].lower()
         if self.kind and ext != "." + self.kind:
             raise Unsupported("OUT must end in .%s for a %s package (PowerPoint refuses a mismatch)"

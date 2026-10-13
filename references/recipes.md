@@ -62,6 +62,21 @@ python <skill-dir>/scripts/pptx_sanitize.py received.pptx --check-clean --json
  "note": "ok means these checks passed, not that the deck is safe to share: review clean_scope.not_checked with the user."}
 ```
 Tell the user what was checked and read out `not_checked`; do not call the deck "safe".
+
+The whole share procedure, in order (stop where it says stop):
+1. `pptx_sanitize.py DECK --check-clean --json`. Exit 0: nothing in the checked categories;
+   go to step 5. Exit 2 or 3: stop and tell the user why (encrypted, malformed).
+2. Show the user `residue` in words and ask which categories to remove. Presenters often keep
+   notes; a hidden slide may be an appendix. No answer: stop, write nothing.
+3. `pptx_sanitize.py DECK DECK.shared.pptx` with exactly the agreed flags (`--all` only if they
+   agreed to all). Exit 1 means something requested is still there: stop and list it.
+4. `pptx_sanitize.py DECK.shared.pptx --check-clean --json`. Items the user chose to keep stay in
+   `residue`; anything else there: stop.
+5. Read `clean_scope.not_checked` to the user and ask them to look at visible text, pictures and
+   alt text; if you can render, `pptx_render.py DECK.shared.pptx DECK.shared.pdf` and
+   `pdftotext DECK.shared.pdf - | grep -i "<sensitive term>"` for terms they name.
+6. Report: output path, what was removed, what was kept on purpose, what was not checked. Never
+   "safe to share"; say "these checks passed".
 Note the output extension: a macro deck becomes `.pptx`. Then render and read the PDF.
 
 ## Example 3: rename a term that is split across runs
@@ -102,7 +117,7 @@ Three images for four slides: the hidden slide is not rendered, so `slide-2.png`
 python <skill-dir>/scripts/pptx_slides.py deck.pptx deck.edited.pptx --delete 2 --move 3:1 --expect-slides 3 --json
 ```
 ```json
-{"ok": true, "input": "deck.pptx", "output": "deck.edited.pptx", "slides_before": 4, "slides_after": 3,
+{"ok": true, "input": "deck.pptx", "output": "deck.edited.pptx", "slides_before": 4, "slides_after": 3, "final_order": [4, 1, 3],
  "changes": ["link to removed slide in ppt/slides/slide1.xml",
              "link to removed slide in ppt/notesSlides/notesSlide2.xml", "deleted slide 2",
              "unreferenced part ppt/notesSlides/notesSlide2.xml", "unreferenced part ppt/slides/slide2.xml",
@@ -142,6 +157,17 @@ The template's own slides and sections were removed. Date, footer and slide-numb
 placeholders are not copied onto new slides by python-pptx; turn them on in PowerPoint
 (Insert > Header & Footer) if wanted. Render to check that text fits.
 
+## Common jobs, start to finish
+| Job | Steps |
+| :--- | :--- |
+| Rename a term everywhere | inspect; `pptx_replace.py --dry-run --json` (read `matches[].after`); ask about hidden slides and charts; rerun with `--expect N`; inspect; render (example 3) |
+| Delete, hide or reorder | inspect; `pptx_slides.py --dry-run --json`; check `final_order`; run with `--expect-slides N`; render (example 5) |
+| New deck from a template | `pptx_build.py --list-layouts`; write the spec; build; inspect; render (example 6) |
+| Received deck | inspect; tell the user the risks; offer a cleaned copy (examples 1 and 2) |
+| Share a deck | the six steps under example 2 |
+| No renderer | do the job; inspect the output; tell the user "layout not checked" and which slides grew; ask them to open it (`fallbacks.md`) |
+| All text for an LLM | `inspect_pptx.py --json` (slides, notes with consent); `extraction.md` compares tools |
+
 ## JSON shapes
 `inspect_pptx.py --json` (keys): `ok, file, kind, main_part, slide_size_emu, masters[{part,
 layouts[{part,name,type}]}], slides[{index, id, part, hidden, layout, layout_name,
@@ -155,14 +181,14 @@ links[{part, where, on, action, scheme, host, risky_scheme, mismatch?, text?, ri
 totals, risks[]`.
 
 `pptx_replace.py --json`: `ok, input, output, replaced, skipped_across_breaks_or_fields,
-not_replaced{charts, smartart}, matches[{where, hidden_slide, text, runs}] (first 200),
+not_replaced{charts, smartart}, matches[{where, hidden_slide, text, after, runs}] (first 200),
 hidden_slides_touched, error`.
 
 `pptx_sanitize.py --json`: write mode `ok, input, output, kind, removed[], remaining[],
 clean_scope{checked[], not_checked[]}, error, note`; `--check-clean` mode `ok, file, kind,
 residue[], clean_scope, error, note`; `--dry-run` `would_remove[]`.
 
-`pptx_slides.py --json`: `ok, input, output, slides_before, slides_after, changes[], problems[], error`.
+`pptx_slides.py --json`: `ok, input, output, slides_before, slides_after, final_order[], changes[], problems[], error`.
 
 `pptx_build.py --json`: `ok, template, output, slides[{index, layout, filled[], empty[], hidden}],
 removed_template_slides, next, error`; with `--list-layouts`: `ok, template, slide_size_emu,

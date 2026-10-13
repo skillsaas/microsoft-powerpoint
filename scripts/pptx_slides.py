@@ -8,7 +8,9 @@ Usage:
 Numbers are 1-based positions in show order (p:sldIdLst) as inspect_pptx.py prints them.
 --delete, --hide and --unhide use the input deck's numbers. --move FROM:TO uses the order after
 the deletes and after earlier moves, left to right. To avoid counting, delete in one run and
-move in a second run on its output.
+move in a second run on its output. The result lists final_order: the input slide numbers in
+their new order (for example [4, 1, 3] after --delete 2 --move 3:1), so you can check without
+recounting.
 
 Delete is complete: the sldId, the presentation relationship, section and custom show entries,
 links from other slides, notes or masters that jump to it, the slide part, and parts only it
@@ -153,10 +155,14 @@ def main(argv=None):
             ps.collect_garbage(pkg, before, log)
         for f, t in moves:
             move(pkg, f, t, log)
-        result = len(pkg.slides())
+        after = pkg.slides()
+        result = len(after)
+        orig_pos = {s["id"]: s["index"] for s in slides}
+        final_order = [orig_pos.get(s["id"]) for s in after]
         probs = consistency(pkg)
         res = {"ok": True, "input": a.input, "output": None if a.dry_run else a.output,
-               "slides_before": n, "slides_after": result, "changes": log, "problems": probs, "error": None}
+               "slides_before": n, "slides_after": result, "final_order": final_order,
+               "changes": log, "problems": probs, "error": None}
         if probs:
             res.update(ok=False, output=None, error="result would need repair; nothing written")
         elif a.expect_slides is not None and result != a.expect_slides:

@@ -223,6 +223,7 @@ def main(argv=None):
         want = {"pdf": ".pdf", "pptx": ".pptx"}.get(a.to)
         if want and os.path.splitext(out)[1].lower() != want:
             raise pk.Unsupported("OUT must end in %s for --to %s" % (want, a.to))
+        pk.check_output(out, src)  # never the input, never through a symlink, even with --force
         if os.path.exists(out) and not (a.force and a.to != "png"):
             raise pk.Unsupported("output exists: %s" % out)
         soffice = find_soffice()

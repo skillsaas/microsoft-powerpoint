@@ -753,6 +753,140 @@ def t_build_refuse():
     assert rc == 2 and not os.path.exists(tmp("build-bidi.pptx")), o
 
 
+
+# ---------------------------------------------------------------- 0.1.2 review fixes
+@test("N1/N4: e-mail addresses parsed before domains (honest dotted mailto passes, other-domain mailto flagged)")
+def t_n1_n4():
+    import pptlinks as lk
+    assert lk.mismatch("jane.doe@corp.com", "mailto:jane.doe@corp.com") is None
+    assert lk.mismatch("Write to jane.doe@corp.com", "mailto:jane.doe@corp.com") is None
+    assert lk.mismatch("security@paypal.com", "mailto:x@evil.io") == "different_domain"
+    assert lk.mismatch("jane.doe@corp.com", "https://corp.com") is None
+    assert lk.mismatch("paypal.com@evil.io", "https://evil.io") == "userinfo"
+    p = mutate(tmp("mail.pptx"), edits={
+        "ppt/slides/slide4.xml": [(b"</p:spTree>",
+            b'<p:sp><p:nvSpPr><p:cNvPr id="77" name="Mail"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:p>'
+            b'<a:r><a:rPr><a:hlinkClick r:id="rIdM1"/></a:rPr><a:t>jane.doe@corp.com</a:t></a:r></a:p></p:txBody></p:sp></p:spTree>')],
+        "ppt/slides/_rels/slide4.xml.rels": [(b"</Relationships>", rel("rIdM1", "hyperlink", "mailto:jane.doe@corp.com") + b"</Relationships>")]})
+    rc, d, o = run("inspect_pptx.py", p, "--json")
+    assert "mismatched-link" not in {r["risk"] for r in d["risks"]}, o
+    out = tmp("mail-clean.pptx")
+    rc, d, o = run("pptx_sanitize.py", p, out, "--remove-active", "--json")
+    assert rc == 0 and b"mailto:jane.doe@corp.com" in all_bytes(out), "honest mailto link must survive"
+
+
+@test("N2: blank-looking characters (U+034F, Hangul fillers, Khmer U+17B4/5) count as invisible")
+def t_n2():
+    import pptlinks as lk
+    for ch in "\u034f\u115f\u1160\u3164\uffa0\u17b4\u17b5":
+        assert lk.mismatch("paypal%s.com" % ch, "https://evil.io") == "invisible_chars", hex(ord(ch))
+
+
+@test("N3: non-Latin and mixed-script display domains are seen (pаypal.com, ペイパル.com); honest IDN passes")
+def t_n3():
+    import pptlinks as lk
+    assert lk.mismatch("p\u0430ypal.com", "https://evil.io") == "mixed_script"
+    assert lk.mismatch("p\u0430ypal.com", "https://xn--pypal-4ve.com") == "mixed_script"
+    assert lk.mismatch("\u30da\u30a4\u30d1\u30eb.com", "https://evil.io") == "different_domain"
+    assert lk.mismatch("b\u00fccher.de", "https://xn--bcher-kva.de/") is None
+    assert lk.mismatch("\u043f\u0440\u0438\u043c\u0435\u0440.\u0440\u0444", "https://xn--e1afmkfd.xn--p1ai/") is None
+    p = mutate(tmp("idn.pptx"), edits={
+        "ppt/slideLayouts/slideLayout2.xml": [(b"</p:spTree>",
+            '<p:sp><p:nvSpPr><p:cNvPr id="78" name="L"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:p>'
+            '<a:r><a:rPr><a:hlinkClick r:id="rIdI1"/></a:rPr><a:t>p\u0430ypal.com</a:t></a:r></a:p></p:txBody></p:sp></p:spTree>'.encode())],
+        "ppt/slideLayouts/_rels/slideLayout2.xml.rels": [(b"</Relationships>", rel("rIdI1", "hyperlink", "https://evil.io/") + b"</Relationships>")]})
+    rc, d, o = run("inspect_pptx.py", p, "--json")
+    assert any(r["risk"] == "mismatched-link" and r["detail"] == "mixed_script" for r in d["risks"]), o
+    out = tmp("idn-clean.pptx")
+    rc, d, o = run("pptx_sanitize.py", p, out, "--remove-active", "--json")
+    assert rc == 0 and b"evil.io" not in all_bytes(out), o
+
+
+@test("writers refuse OUT that is the input or a symlink, even with --force (build, slides, replace, sanitize, render)")
+def t_same_file():
+    src = tmp("same.pptx")
+    shutil.copyfile(FIX, src)
+    link = tmp("same-link.pptx")
+    os.symlink(src, link)
+    before = sha(src)
+    spec = tmp("same-spec.json")
+    json.dump({"slides": [{"layout": 1, "fill": {"0": "x"}}]}, open(spec, "w"))
+    cases = [("pptx_slides.py", [src, None, "--hide", "1"]),
+             ("pptx_replace.py", [src, None, "--find", "Q3", "--replace", "Q4"]),
+             ("pptx_sanitize.py", [src, None, "--strip-metadata"]),
+             ("pptx_render.py", [src, None, "--to", "pptx"])]
+    if have_pptx():
+        cases.append(("pptx_build.py", [src, spec, None]))
+    for script, args in cases:
+        for out in (src, link):
+            argv = [out if x is None else x for x in args] + ["--force", "--json"]
+            rc, d, o = run(script, *argv)
+            assert rc == 2 and ("input file" in d["error"] or "symbolic link" in d["error"]), (script, out, o)
+    assert sha(src) == before and os.path.islink(link), "input or link changed"
+
+
+@test("build: image paths confined to the spec folder; bad image and bad level give exit 2 JSON, no traceback")
+def t_build_images():
+    if not have_pptx():
+        return "python-pptx not installed"
+    d0 = tempfile.mkdtemp(dir=TMP)
+    red_png(os.path.join(TMP, "outside.png"))
+    open(os.path.join(d0, "bad.png"), "w").write("not an image")
+    for name, img in (("abs", os.path.join(TMP, "outside.png")), ("up", "../outside.png"), ("bad", "bad.png")):
+        spec = os.path.join(d0, name + ".json")
+        json.dump({"slides": [{"layout": "Picture with Caption", "fill": {"1": {"image": img}}}]}, open(spec, "w"))
+        out = tmp("img-%s.pptx" % name)
+        rc, d, o = run("pptx_build.py", FIX, spec, out, "--json")
+        assert rc == 2 and d and not d["ok"] and "Traceback" not in o and not os.path.exists(out), (name, o)
+    spec = os.path.join(d0, "up.json")
+    rc, d, o = run("pptx_build.py", FIX, spec, tmp("img-allowed.pptx"), "--allow-image-outside", "--json")
+    assert rc == 0, o
+    spec = os.path.join(d0, "lvl.json")
+    json.dump({"slides": [{"layout": 1, "fill": {"1": [{"text": "a", "level": "x"}]}}]}, open(spec, "w"))
+    rc, d, o = run("pptx_build.py", FIX, spec, tmp("lvl.pptx"), "--json")
+    assert rc == 2 and "Traceback" not in o, o
+
+
+@test("build: .potx content type changed only on the main part's Override (parsed, not byte-replaced)")
+def t_build_ct():
+    if not have_pptx():
+        return "python-pptx not installed"
+    import pptx_build as pb
+    import pptpkg as pk
+    tpl = potx(tmp("ct.potx"))
+    work = tempfile.mkdtemp(dir=TMP)
+    copy = pb.load_template(tpl, work)
+    ct = zipfile.ZipFile(copy).read("[Content_Types].xml")
+    before = zipfile.ZipFile(tpl).read("[Content_Types].xml")
+    assert b"presentationml.presentation.main+xml" in ct and b"template.main+xml" not in ct
+    assert ct.count(b"<Override") == before.count(b"<Override") and ct.count(b"<Default") == before.count(b"<Default")
+    assert pk.Package(copy).kind == "pptx"
+
+
+@test("slides: JSON lists final_order as input numbers; replace dry run shows text after replacement")
+def t_final_order():
+    rc, d, o = run("pptx_slides.py", FIX, tmp("fo.pptx"), "--delete", "2", "--move", "3:1", "--dry-run", "--json")
+    assert rc == 0 and d["final_order"] == [4, 1, 3], o
+    rc, d, o = run("pptx_replace.py", FIX, tmp("after.pptx"), "--find", "Q3 revenue", "--replace", "Q4 sales",
+                   "--dry-run", "--json")
+    assert rc == 0 and d["matches"][0]["after"].startswith("Q4 sales") and "Q3 revenue" in d["matches"][0]["text"], o
+
+
+@test("frontmatter: top-level keys at column 0, project fields nested under metadata, version in sync")
+def t_frontmatter():
+    fm = open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8").read().split("---")[1]
+    top = [l.split(":", 1)[0] for l in fm.strip("\n").splitlines() if l and not l.startswith(" ")]
+    assert top == ["name", "description", "license", "compatibility", "metadata"], top
+    nested = [l.strip().split(":", 1)[0] for l in fm.splitlines() if l.startswith("  ")]
+    assert "version" in nested and "tested-with" in nested and all(l.startswith("  ") for l in fm.splitlines()
+                                                                    if l.strip().startswith(("version:", "tested-with:")))
+    for l in fm.strip("\n").splitlines():
+        key, _, val = l.strip().partition(":")
+        assert re.match(r"^[a-z-]+$", key), l
+        val = val.strip()
+        assert val == "" or (val.startswith('"') and val.endswith('"') and '"' not in val[1:-1]) or key in ("name", "license"), l
+
+
 # ---------------------------------------------------------------- render
 def render_ready():
     import pptx_render as pr
@@ -798,8 +932,10 @@ def pdf_images(pdf):
     return len(out.strip().splitlines()) - 2
 
 
-@test("threat is real: unsandboxed LibreOffice fetches http and embeds local linked pictures")
+@test("positive control, test only, never do this: plain unsandboxed soffice on a localhost canary deck fetches http and embeds a temp local picture")
 def t_threat_real():
+    """Deliberately unsafe on purpose: proves the threat the sandbox blocks. Only a localhost
+    canary server and a temp red PNG are involved. Do not copy this pattern into real work."""
     if not render_ready():
         return "LibreOffice, bwrap or pdftoppm missing"
     import pptx_render as pr

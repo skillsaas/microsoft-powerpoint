@@ -15,6 +15,8 @@ How: inside each paragraph (a:p) the text of consecutive runs is joined, matched
 replacement is written into the run where the match starts; the matched characters are cut
 from the following runs, so each run keeps its own formatting. A match never crosses a line
 break (a:br) or a field (a:fld: slide number, date); those are counted as "skipped".
+Each entry in matches has "text" (before) and "after" (the same context with the replacement),
+so a --dry-run doubles as a preview of every change.
 
 Scope: all slides in show order, hidden slides included (reported). --notes adds speaker notes.
 --masters adds slide layouts and masters (changes every slide that inherits that text).
@@ -227,9 +229,10 @@ def main(argv=None):
                     idx += 1
                     if ms:
                         joined = "".join(t.text or "" for t in ts)
-                        for st, en, _ in ms:
+                        for st, en, rep in ms:
                             hits.append({"where": label, "hidden_slide": hidden,
                                          "text": pk.clean_text(joined[max(0, st - 30):en + 30], 120),
+                                         "after": pk.clean_text(joined[max(0, st - 30):st] + rep + joined[en:en + 30], 120),
                                          "runs": sum(1 for t, (b0, b1) in zip(ts, _bounds(ts)) if b0 < en and b1 > st)})
                         if not a.dry_run:
                             apply(ts, ms)

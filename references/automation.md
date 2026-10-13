@@ -1,5 +1,9 @@
 # Automating PowerPoint itself: VBA, Office.js, Microsoft Graph
 
+**For the user's side.** These run inside PowerPoint, an add-in or a Microsoft 365 tenant, not in
+the agent's shell. Give them to the user to run (or run them only where the user has set that
+up and asked), and say they are documented, not tested here.
+
 **Documented, not executed.** Nothing here was run against PowerPoint or a Microsoft 365
 tenant. Office.js member names and requirement sets were checked against `@types/office-js`
 1.0.611 (npm, 2026-10-13); Graph against Microsoft Learn on 2026-10-13; VBA against
@@ -35,7 +39,10 @@ fail; keep outputs beside the deck (documented behaviour of sandboxed Mac apps, 
 Function NotesText(sl As Slide) As String
   Dim sh As Shape
   For Each sh In sl.NotesPage.Shapes.Placeholders
-    If sh.PlaceholderFormat.Type = ppPlaceholderBody Then NotesText = sh.TextFrame.TextRange.Text
+    If sh.PlaceholderFormat.Type = ppPlaceholderBody And sh.HasTextFrame Then
+      NotesText = sh.TextFrame.TextRange.Text
+      Exit For
+    End If
   Next
 End Function
 
