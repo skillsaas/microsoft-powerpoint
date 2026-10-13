@@ -1,7 +1,7 @@
 {
   "name": "microsoft-powerpoint",
-  "version": "0.1.0",
-  "description": "Agent skill (SKILL.md) for Microsoft PowerPoint: inspect, edit, render and safely share .pptx/.pptm/.ppsx/.potx decks. Covers slide masters, layouts and placeholders, python-pptx limits, charts with embedded workbooks, notes, sections, hidden slides, media, LibreOffice rendering in a sandbox, VBA, Office.js and Microsoft Graph. Includes hardened inspect, split-run replace, sanitize/share-check and sandboxed render scripts (Python, lxml).",
+  "version": "0.1.1",
+  "description": "Agent skill (SKILL.md) for Microsoft PowerPoint: inspect, edit, build from templates, reorder or delete slides, render in a sandbox and check decks before sharing. Python scripts (lxml), tested references for python-pptx, PresentationML, charts, VBA, Office.js and Microsoft Graph.",
   "license": "MIT",
   "author": "Ali Tanveer",
   "repository": {

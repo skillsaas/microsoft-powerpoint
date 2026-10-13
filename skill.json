@@ -1,22 +1,23 @@
 {
   "name": "microsoft-powerpoint",
-  "version": "0.1.0",
-  "description": "Use when reading, creating, editing, rendering, cleaning or automating Microsoft PowerPoint decks (.pptx, .pptm, .ppsx, .potx, .ppt, .odp): find and replace that misses words split across runs, python-pptx limits (no slide delete, reorder or hidden flag, text setter drops formatting), slide masters, layouts and placeholder inheritance, charts with embedded Excel workbooks, speaker notes, sections, hidden slides, media, animations and transitions, slide previews or PDF export with LibreOffice, VBA, Office.js PowerPoint API or Microsoft Graph automation, and safe handling of untrusted or outgoing decks (macros, OLE objects, linked pictures and media, click actions that run programs, comments, notes, hidden slides and metadata before sharing). Not needed for Google Slides or Keynote files that never become .pptx.",
+  "version": "0.1.1",
+  "description": "Use when reading, editing, building, rendering, cleaning or automating PowerPoint decks (.pptx, .pptm, .potx, .ppt, .odp): text split across runs, slide delete/reorder/hide, filling template placeholders, charts with embedded workbooks, notes, sections, PDF or PNG previews, VBA, Office.js or Graph, and checking untrusted or outgoing decks (macros, links, actions, notes, hidden slides, metadata). Not for Google Slides or Keynote files.",
   "entry": "SKILL.md",
   "skill_md_url": "https://raw.githubusercontent.com/skillsaas/microsoft-powerpoint/main/SKILL.md",
   "repository": "https://github.com/skillsaas/microsoft-powerpoint",
   "license": "MIT",
   "platforms": {
-    "scripts": "any OS with Python 3.9+ and lxml",
+    "inspect, replace, sanitize, slides": "any OS with Python 3.9+ and lxml>=5 (tested on Linux only)",
+    "pptx_build.py": "any OS with python-pptx (tested on Linux only)",
     "pptx_render.py": "Linux only (bubblewrap); refuses elsewhere by design"
   },
   "requires": {
     "python": ">=3.9",
     "pip": [
-      "lxml"
+      "lxml>=5"
     ],
     "pip_optional": [
-      "python-pptx"
+      "python-pptx>=1.0,<2"
     ],
     "system_optional": [
       "libreoffice-impress",
@@ -45,5 +46,22 @@
     "libreoffice-impress": "MPL-2.0",
     "bubblewrap": "LGPL-2.0-or-later",
     "poppler-utils": "GPL-2.0-or-later"
-  }
+  },
+  "tested_with": {
+    "python": "3.13.5",
+    "lxml": "6.1.3",
+    "python-pptx": "1.0.2",
+    "XlsxWriter": "3.2.9",
+    "markitdown": "0.1.7",
+    "libreoffice": "25.2.3.2",
+    "os": "Linux x86_64",
+    "date": "2026-10-13"
+  },
+  "not_tested": [
+    "PowerPoint (any version)",
+    "Office.js runtime",
+    "Microsoft Graph tenant",
+    "macOS",
+    "Windows"
+  ]
 }

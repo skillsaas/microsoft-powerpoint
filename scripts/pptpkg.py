@@ -349,6 +349,10 @@ class Package:
             raise Unsupported("output exists: %s (use --force to replace it, no backup is kept)" % out_path)
         if os.path.abspath(self.path) == out_path:
             raise Unsupported("output is the input file; write to a new path")
+        ext = os.path.splitext(out_path)[1].lower()
+        if self.kind and ext != "." + self.kind:
+            raise Unsupported("OUT must end in .%s for a %s package (PowerPoint refuses a mismatch)"
+                              % (self.kind, self.kind))
         d = os.path.dirname(out_path) or "."
         fd, tmp = tempfile.mkstemp(prefix=".pptx-", suffix=".tmp", dir=d)
         os.close(fd)

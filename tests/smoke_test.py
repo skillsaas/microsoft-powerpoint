@@ -672,7 +672,7 @@ def t_slides():
     assert consistent(out3) and opens(out3)
 
 
-@test("slides: refuses deleting every slide, bad numbers, --expect-slides mismatch; --dry-run writes nothing")
+@test("slides: refuses deleting every slide, bad numbers, --expect-slides mismatch, wrong extension; --dry-run writes nothing")
 def t_slides_refuse():
     rc, d, o = run("pptx_slides.py", FIX, tmp("none.pptx"), "--delete", "1-4", "--json")
     assert rc == 2 and not os.path.exists(tmp("none.pptx")), o
@@ -680,6 +680,9 @@ def t_slides_refuse():
     assert rc == 2 and not os.path.exists(tmp("bad.pptx")), o
     rc, d, o = run("pptx_slides.py", FIX, tmp("exp.pptx"), "--delete", "1", "--expect-slides", "7", "--json")
     assert rc == 1 and not os.path.exists(tmp("exp.pptx")), o
+    for script, args in (("pptx_slides.py", ["--hide", "1"]), ("pptx_replace.py", ["--find", "Q3", "--replace", "Q4"])):
+        rc, d, o = run(script, FIX, tmp("wrong.pptm"), *args, "--json")
+        assert rc == 2 and "must end in .pptx" in d["error"] and not os.path.exists(tmp("wrong.pptm")), o
     rc, d, o = run("pptx_slides.py", FIX, tmp("dry.pptx"), "--delete", "1", "--dry-run", "--json")
     assert rc == 0 and not os.path.exists(tmp("dry.pptx")), o
 
