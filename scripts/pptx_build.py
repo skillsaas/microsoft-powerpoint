@@ -21,8 +21,10 @@ SPEC.json:
   ]}
   layout: name (case-insensitive) or 0-based index from --list-layouts.
   fill keys: placeholder idx from --list-layouts. Values: a string, a list of paragraphs
-  (strings or {"text", "level"}), or {"image": path} for a picture placeholder (path relative
-  to the spec file).
+  (strings or {"text", "level"}), {"image": path} for a picture placeholder (path relative
+  to the spec file), or {"table": [["Region", "Q3"], ["EMEA", "12%"]]} (rows of strings, the
+  first row is the header; up to 50 rows and 20 columns). A table placeholder gets the table
+  itself; any other placeholder is replaced by a table at its position and size.
 Why idx: placeholders keep the layout's position, fonts and bullets, and titles stay titles in
 the outline and for screen readers. Text boxes at fixed coordinates do not.
 
@@ -111,6 +113,33 @@ def fill_text(tf, value, where):
         p.level = max(0, min(level, 8))
 
 
+def fill_table(slide, ph, rows, where):
+    """Put a table where placeholder ph is. Rows are lists of strings; row 0 is the header."""
+    if (not isinstance(rows, list) or not rows or len(rows) > 50
+            or not all(isinstance(r, list) and r for r in rows)):
+        raise pk.Unsupported("%s: table must be 1 to 50 rows, each a non-empty list" % where)
+    cols = max(len(r) for r in rows)
+    if cols > 20:
+        raise pk.Unsupported("%s: table has more than 20 columns" % where)
+    for r in rows:
+        for c in r:
+            if not isinstance(c, str):
+                raise pk.Unsupported("%s: table cells must be strings" % where)
+            check(c, where + " table cell")
+    if hasattr(ph, "insert_table"):
+        table = ph.insert_table(len(rows), cols).table
+    else:
+        x, y, w, h = ph.left, ph.top, ph.width, ph.height
+        if None in (x, y, w, h):
+            raise pk.Unsupported("%s: placeholder has no position to place a table" % where)
+        el = ph._element
+        el.getparent().remove(el)
+        table = slide.shapes.add_table(len(rows), cols, x, y, w, h).table
+    for i, r in enumerate(rows):
+        for j in range(cols):
+            table.cell(i, j).text = r[j] if j < len(r) else ""
+
+
 def image_path(base, rel, allow_outside, n):
     """Images must sit in the spec's folder or below it, so a spec cannot pull an arbitrary
     file from disk into a deck that will be shared. --allow-image-outside lifts this."""
@@ -186,6 +215,8 @@ def build(a):
                     except Exception as exc:  # PIL and python-pptx raise many types for bad images
                         raise pk.Unsupported("slide %d: cannot use image %s: %s"
                                              % (n, value["image"], pk.clean_text(str(exc), 200)))
+                elif isinstance(value, dict) and "table" in value:
+                    fill_table(slide, ph, value["table"], "slide %d idx %d" % (n, idx))
                 else:
                     if not ph.has_text_frame:
                         raise SpecError("slide %d: placeholder idx %d holds no text" % (n, idx))

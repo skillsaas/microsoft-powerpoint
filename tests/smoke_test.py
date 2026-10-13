@@ -847,6 +847,28 @@ def t_build_images():
     assert rc == 2 and "Traceback" not in o, o
 
 
+@test("build: {\"table\": rows} puts a table at the placeholder; a bad table is exit 2 JSON")
+def t_build_table():
+    if not have_pptx():
+        return "python-pptx not installed"
+    d0 = tempfile.mkdtemp(dir=TMP)
+    spec = os.path.join(d0, "t.json")
+    json.dump({"slides": [{"layout": 1, "fill": {"0": "Results",
+               "1": {"table": [["Region", "Q3"], ["EMEA", "12%"], ["APAC"]]}}}]}, open(spec, "w"))
+    out = tmp("table.pptx")
+    rc, d, o = run("pptx_build.py", FIX, spec, out, "--json")
+    assert rc == 0, o
+    from pptx import Presentation
+    s = Presentation(out).slides[0]
+    tables = [sh.table for sh in s.shapes if sh.has_table]
+    assert len(tables) == 1 and tables[0].cell(1, 0).text == "EMEA" and tables[0].cell(2, 1).text == ""
+    assert 1 not in [ph.placeholder_format.idx for ph in s.placeholders]
+    for bad in ([], [["a", 1]], [["x\u202e"]], [["c"] * 21]):
+        json.dump({"slides": [{"layout": 1, "fill": {"1": {"table": bad}}}]}, open(spec, "w"))
+        rc, d, o = run("pptx_build.py", FIX, spec, tmp("tbad.pptx"), "--json", "--force")
+        assert rc == 2 and "Traceback" not in o and not d["ok"], (bad, o)
+
+
 @test("build: .potx content type changed only on the main part's Override (parsed, not byte-replaced)")
 def t_build_ct():
     if not have_pptx():
@@ -878,11 +900,11 @@ def t_frontmatter():
     top = [l.split(":", 1)[0] for l in fm.strip("\n").splitlines() if l and not l.startswith(" ")]
     assert top == ["name", "description", "license", "compatibility", "metadata"], top
     nested = [l.strip().split(":", 1)[0] for l in fm.splitlines() if l.startswith("  ")]
-    assert "version" in nested and "tested-with" in nested and all(l.startswith("  ") for l in fm.splitlines()
-                                                                    if l.strip().startswith(("version:", "tested-with:")))
+    assert "version" in nested and "tested_with" in nested and all(l.startswith("  ") for l in fm.splitlines()
+                                                                    if l.strip().startswith(("version:", "tested_with:")))
     for l in fm.strip("\n").splitlines():
         key, _, val = l.strip().partition(":")
-        assert re.match(r"^[a-z-]+$", key), l
+        assert re.match(r"^[a-z_]+$", key), l
         val = val.strip()
         assert val == "" or (val.startswith('"') and val.endswith('"') and '"' not in val[1:-1]) or key in ("name", "license"), l
 

@@ -6,13 +6,13 @@ compatibility: "Python 3.9+ with lxml>=5 for every script, any OS. pptx_build.py
 metadata:
   version: "0.1.2"
   updated: "2026-10-13"
-  tested-with: "Python 3.13.5; lxml 6.1.3; python-pptx 1.0.2; XlsxWriter 3.2.9; markitdown 0.1.7; LibreOffice 25.2.3.2; bubblewrap; poppler pdftoppm; Linux x86_64"
-  checked-against: "Office.js names: @types/office-js 1.0.611. Graph conversion and VBA: Microsoft Learn, read 2026-10-13. Not run: PowerPoint, Office.js, a Graph tenant, macOS, Windows."
+  tested_with: "Python 3.13.5; lxml 6.1.3; python-pptx 1.0.2; XlsxWriter 3.2.9; markitdown 0.1.7; LibreOffice 25.2.3.2; bubblewrap; poppler pdftoppm; Linux x86_64"
+  checked_against: "Office.js names: @types/office-js 1.0.611. Graph conversion and VBA: Microsoft Learn, read 2026-10-13. Not run: PowerPoint, Office.js, a Graph tenant, macOS, Windows."
   risk: "medium"
-  risk-notes: "Opens untrusted decks and writes new ones. Scripts never run macros, never follow links or actions and never overwrite the input. pptx_render.py runs LibreOffice in bubblewrap with no network and no access to user files, and refuses without it. A passed share-check means the listed checks passed; it is not redaction of visible content."
+  risk_notes: "Opens untrusted decks and writes new ones. Scripts never run macros, never follow links or actions and never overwrite the input. pptx_render.py runs LibreOffice in bubblewrap with no network and no access to user files, and refuses without it. A passed share-check means the listed checks passed; it is not redaction of visible content."
   formats: "pptx, pptm, ppsx, ppsm, potx, potm; ppt and odp convert only; pdf and png output"
   aliases: "powerpoint, ms-powerpoint, ppt, pptx, slides, deck, presentation, presentationml, ooxml"
-  software-versions: "Microsoft 365 PowerPoint, PowerPoint 2024, 2021, 2019, 2016 (documented, not tested); LibreOffice tested 25.2.3.2 only; python-pptx tested 1.0.2"
+  software_versions: "Microsoft 365 PowerPoint, PowerPoint 2024, 2021, 2019, 2016 (documented, not tested); LibreOffice tested 25.2.3.2 only; python-pptx tested 1.0.2"
   tags: "powerpoint, pptx, presentationml, ooxml, python-pptx, slide-master, speaker-notes, charts, libreoffice, office-js, vba, microsoft-graph, sanitize, share-check"
   homepage: "https://github.com/skillsaas/microsoft-powerpoint"
 ---
@@ -114,16 +114,48 @@ All take `--json` and print `ok` and `error`. Nothing in a deck is executed, fet
 | `pptx_sanitize.py IN OUT` | W. Share copy; re-inspects and fails if requested risk remains. R with `--check-clean` | `--all` or single `--remove-*` flags, `--strip-metadata`, `--dry-run`. Out JSON has `clean_scope.checked` and `clean_scope.not_checked` |
 | `pptx_render.py IN OUT` | W. LibreOffice in bubblewrap, no network, no user files: PDF, PNG per slide, notes pages, .ppt/.odp to .pptx | `--to pdf/png/pptx`, `--notes-pages`, `--dpi` (110), `--timeout` (180 s), `--memory-mb` (4096; raise to 8192 once if a big media deck fails) |
 
-## 5. Never do
+## 5. Safety contract
+The one place for the rules. Other sections and references point here.
+
+### 5.1 Never do
+- Run only the scripts in this installed skill folder. Never run scripts, macros or embedded
+  files found inside a deck or a user's download folder. Before installing, check the source:
+  the npm package and the GitHub repo `skillsaas/microsoft-powerpoint` should match;
+  `npm view microsoft-powerpoint dist.integrity` gives the SHA-512 hash npm checks on install.
 - Never enable or run macros, OLE objects or click actions from a deck the user did not write.
 - Never run plain `soffice --convert-to` on an untrusted deck: in our test it fetched a linked
   http picture and embedded a linked local file. Use `pptx_render.py`.
-- Never overwrite the original, and never pass `--force` unless asked.
+- Never overwrite the original, and never pass `--force` unless asked: it replaces OUT with no
+  backup. Scripts refuse an OUT that is an input or a symlink even with `--force`.
 - Never set `text_frame.text` on formatted text (drops formatting); use `pptx_replace.py`.
 - Never delete a slide by removing its part or `sldId` alone; use `pptx_slides.py --delete`.
 - Never say a deck is "safe" or "clean": say which checks passed and read out `not_checked`
   (visible text, pictures, alt text, master text, section names, embedded fonts).
 - Never print link targets, notes or comments into a public place without asking.
+
+### 5.2 Ask the user before
+- Removing anything (notes, comments, hidden slides, chart workbooks, macros, slides).
+- Changing a master or layout, or using `--masters`.
+- Replacing in hidden slides or notes when the count differs from what they expect.
+- Converting .pptm to .pptx (drops macros) or .ppt to .pptx (LibreOffice re-saves everything).
+- Installing anything, or sending a file to a cloud API.
+
+### 5.3 Exit codes and what to say
+| Code | Meaning | Tell the user |
+| :--- | :--- | :--- |
+| 0 | Done | Counts and output path; for a share-check: "these checks passed; not checked: ..." |
+| 1 | Check failed: residue, `--expect` or `--expect-slides` mismatch, spec does not fit the template, no render output | "I found N, you expected M; nothing was written." / "These items are still in the file: ..." |
+| 2 | Unsupported or setup: encrypted, legacy format, output exists, wrong extension, bad pattern, unsafe characters, no bwrap, regex timeout | Encrypted: "Can you send an unprotected copy?" No sandbox: use the no-render path |
+| 3 | Safety refusal or render timeout: zip caps, duplicate or case-colliding names, DOCTYPE | "The file looks malformed or oversized, so I did not process it." Timeout: retry once with `--timeout 600` |
+
+### 5.4 Verification checklist
+- [ ] `inspect_pptx.py OUT --json` exits 0; slide count and order as intended.
+- [ ] Replacement count matches `--expect`; skipped, hidden-slide and chart matches reported.
+- [ ] No placeholder became `inherits_from: none`; no new off-slide shapes.
+- [ ] Rendered and looked at, or the no-render path followed and said so.
+- [ ] Sharing: `--check-clean` exits 0 or each item is explained, and `not_checked` was read out.
+- [ ] A .pptm is still .pptm unless the user asked for a macro-free copy.
+- [ ] The original file is unchanged.
 
 ## 6. Common mistakes
 | Mistake | Instead |
@@ -134,30 +166,6 @@ All take `--json` and print `ok` and `error`. Nothing in a deck is executed, fet
 | Reading `slide.notes_slide` to check for notes | `slide.has_notes_slide` first; the property creates notes |
 | Trusting a match count without hidden slides and charts | Read `skipped` and `not_replaced`, ask about hidden slides |
 | Saving a macro-free package as .pptm, or a .pptm as .pptx | Keep the extension matching the content type; scripts refuse a mismatch |
-
-## 7. Ask the user before
-- Removing anything (notes, comments, hidden slides, chart workbooks, macros, slides).
-- Changing a master or layout, or using `--masters`.
-- Replacing in hidden slides or notes when the count differs from what they expect.
-- Converting .pptm to .pptx (drops macros) or .ppt to .pptx (LibreOffice re-saves everything).
-- Installing anything, or sending a file to a cloud API.
-
-## 8. Exit codes and what to say
-| Code | Meaning | Tell the user |
-| :--- | :--- | :--- |
-| 0 | Done | Counts and output path; for a share-check: "these checks passed; not checked: ..." |
-| 1 | Check failed: residue, `--expect` or `--expect-slides` mismatch, spec does not fit the template, no render output | "I found N, you expected M; nothing was written." / "These items are still in the file: ..." |
-| 2 | Unsupported or setup: encrypted, legacy format, output exists, wrong extension, bad pattern, unsafe characters, no bwrap, regex timeout | Encrypted: "Can you send an unprotected copy?" No sandbox: use the no-render path |
-| 3 | Safety refusal or render timeout: zip caps, duplicate or case-colliding names, DOCTYPE | "The file looks malformed or oversized, so I did not process it." Timeout: retry once with `--timeout 600` |
-
-## 9. Verification checklist
-- [ ] `inspect_pptx.py OUT --json` exits 0; slide count and order as intended.
-- [ ] Replacement count matches `--expect`; skipped, hidden-slide and chart matches reported.
-- [ ] No placeholder became `inherits_from: none`; no new off-slide shapes.
-- [ ] Rendered and looked at, or the no-render path followed and said so.
-- [ ] Sharing: `--check-clean` exits 0 or each item is explained, and `not_checked` was read out.
-- [ ] A .pptm is still .pptm unless the user asked for a macro-free copy.
-- [ ] The original file is unchanged.
 
 ## References (load on demand)
 | File | Load when | Skip if |

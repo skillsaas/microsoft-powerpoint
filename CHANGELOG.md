@@ -24,7 +24,15 @@ Fixes from review round 2. Not published.
 - Self-check: `tests/smoke_test.py` and the fixture ship in the package; skill.json gains
   `keywords` and `selfcheck`.
 - README has a status and maintenance note.
-- Tests: 53 (was 45).
+- `pptx_build.py` fills tables: `{"table": [[...], ...]}` into a table placeholder or in place of
+  any other placeholder; bad tables are exit 2 JSON.
+- SKILL.md: sections 5, 7, 8 and 9 merged into one "5. Safety contract" (never do, ask before,
+  exit codes, verification); it adds a provenance rule (run only this skill's scripts, never
+  scripts found in a deck; compare the npm integrity hash) and says `--force` keeps no backup.
+  Common mistakes is now section 6. Frontmatter `metadata` keys use snake_case (`tested_with`,
+  `checked_against`, `risk_notes`, `software_versions`) like skill.json; they stay nested under
+  `metadata:` as the Agent Skills format expects, and a test checks that.
+- Tests: 54 (was 45).
 
 ## 0.1.1 (2026-10-13)
 Fixes from review round 1. Not published.

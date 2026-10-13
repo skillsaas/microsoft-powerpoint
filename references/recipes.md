@@ -157,6 +157,11 @@ The template's own slides and sections were removed. Date, footer and slide-numb
 placeholders are not copied onto new slides by python-pptx; turn them on in PowerPoint
 (Insert > Header & Footer) if wanted. Render to check that text fits.
 
+A table: `"1": {"table": [["Region", "Q3"], ["EMEA", "12%"]]}`. Rows are lists of strings,
+row 0 is the header, at most 50 rows and 20 columns; short rows are padded with empty cells. A
+table placeholder takes it directly; a body placeholder is replaced by a table at its position
+and size, using the template's default table style. Tested on a body placeholder.
+
 ## Common jobs, start to finish
 | Job | Steps |
 | :--- | :--- |
