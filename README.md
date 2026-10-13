@@ -45,7 +45,7 @@ poppler-utils. See the catalog at https://github.com/skillsaas/index.
 
 ## Status and maintenance
 
-Version 0.1.2, pre-release: not on npm yet and not run on macOS or Windows. Each version is
+Version 0.1.3, pre-release: not on npm yet and not run on macOS or Windows. Each version is
 reviewed by a panel of people and AI agents before the next; CHANGELOG.md lists what changed and
 why. Versions follow semver; until 1.0, a minor bump may change script flags or JSON fields, and
 the CHANGELOG says so. Run `python tests/smoke_test.py` after install to check your setup.

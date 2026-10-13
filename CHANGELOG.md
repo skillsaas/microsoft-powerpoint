@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.1.3 (2026-10-13)
+Fixes from review round 3. Not published.
+- `pptx_build.py` checks the spec's shape before building: a slide that is not an object,
+  `fill` not an object, `"1"` and `"01"` for one idx, `notes` not a string, `"layout": true`,
+  `hidden` not a boolean, over 2,000 characters in a paragraph or cell or 200,000 in the spec
+  are exit 2 JSON (before, some crashed with a traceback and exit 1, and a huge cell tripped a
+  misleading exit 3 on the output). Any unexpected error is exit 2 JSON too.
+- `pptx_build.py --dry-run` prints each slide's layout and filled and empty idx; writes nothing.
+- JSON `warnings`: a table that replaced a title, date, footer or slide-number placeholder;
+  table rows padded with empty cells (also `padded_cells`); images with EXIF or GPS data.
+- Images: `--image-dir` names the folder images must stay in (default still the spec's
+  folder, documented honestly: the agent chooses where the spec is saved); files with more than
+  one hard link and paths with control characters or NUL are refused; `image_metadata` in JSON
+  and `--strip-image-metadata`; a bad image says "not a readable image", no object repr.
+- Links: U+2800, U+1D159, U+1D173 to U+1D17A and variation selectors after a letter or dot are
+  invisible; plain text over an `xn--` host gives `punycode_host`; a two-letter ending before
+  "@" counts as a host only when the address is not at the target's site (`ali.pk@corp.com`
+  over corp.com passes). Trade-offs written in pptlinks.py and security.md.
+- security.md: the suffix-list caveat with examples (`sch.uk`), the new reasons, and a section on
+  picture metadata and the image folder boundary.
+- SKILL.md: description cut to 44 words; load-order note; merge is not scripted (say so, point
+  to Reuse Slides or `insertSlidesFromBase64`); legacy conversion is a lossy re-save; Graph is a
+  cloud upload, ask first; build row covers `--dry-run`, exit 2 and warnings.
+- Tests: 59 (was 54). `tests/smoke_test.py --fast` skips the LibreOffice runs. `tests/evals.json`: seven
+  agent-behavior cases (request, commands, ask-before, report), shipped; a test checks every
+  named flag exists. The output-guard test adds hard-link and other-spelling cases.
+
 ## 0.1.2 (2026-10-13)
 Fixes from review round 2. Not published.
 - Links (`pptlinks.py`): e-mail addresses are parsed before domains, so `jane.doe@corp.com` over

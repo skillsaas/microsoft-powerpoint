@@ -161,15 +161,29 @@ A table: `"1": {"table": [["Region", "Q3"], ["EMEA", "12%"]]}`. Rows are lists o
 row 0 is the header, at most 50 rows and 20 columns; short rows are padded with empty cells. A
 table placeholder takes it directly; a body placeholder is replaced by a table at its position
 and size, using the template's default table style. Tested on a body placeholder.
+A table over a title, date, footer or slide-number placeholder replaces it: the build goes on
+and JSON `warnings` says the slide lost its title. Padded rows also give a warning.
+
+Before writing, `--dry-run` checks the spec and prints the plan (real output, test fixture):
+```
+ 1  Title and Content            fill [0, 1]  empty []
+dry run: nothing written
+```
+A malformed spec (a slide that is not an object, `fill` not an object, `"1"` and `"01"` both
+given, `notes` not a string, `"layout": true`, more than 2,000 characters in one paragraph or
+cell) is exit 2 JSON before anything is built. Pictures: keep them in a fresh folder and pass
+it as `--image-dir`; photos with EXIF or GPS data are listed in `warnings`, and
+`--strip-image-metadata` removes it.
 
 ## Common jobs, start to finish
 | Job | Steps |
 | :--- | :--- |
 | Rename a term everywhere | inspect; `pptx_replace.py --dry-run --json` (read `matches[].after`); ask about hidden slides and charts; rerun with `--expect N`; inspect; render (example 3) |
 | Delete, hide or reorder | inspect; `pptx_slides.py --dry-run --json`; check `final_order`; run with `--expect-slides N`; render (example 5) |
-| New deck from a template | `pptx_build.py --list-layouts`; write the spec; build; inspect; render (example 6) |
+| New deck from a template | `pptx_build.py --list-layouts`; write the spec; `--dry-run`; build; tell the user any `warnings`; inspect; render (example 6) |
 | Received deck | inspect; tell the user the risks; offer a cleaned copy (examples 1 and 2) |
 | Share a deck | the six steps under example 2 |
+| Combine decks | not scripted: say so; PowerPoint Reuse Slides, or Office.js `insertSlidesFromBase64` (`automation.md`) |
 | No renderer | do the job; inspect the output; tell the user "layout not checked" and which slides grew; ask them to open it (`fallbacks.md`) |
 | All text for an LLM | `inspect_pptx.py --json` (slides, notes with consent); `extraction.md` compares tools |
 

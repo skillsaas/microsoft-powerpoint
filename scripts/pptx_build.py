@@ -32,10 +32,23 @@ Template slides are removed completely (as pptx_slides.py --delete does), with t
 sections, unless --keep-template-slides. Placeholders left empty show "Click to add ..." while editing (not in
 the show); --remove-empty deletes them. Spec text with control, bidi or zero-width characters
 is refused.
-Image paths must be relative and stay inside the spec's folder (realpath checked), so a spec
-cannot pull an arbitrary file into the deck; --allow-image-outside lifts this after asking.
+Image paths must be relative and stay inside the image folder (realpath checked): --image-dir
+DIR if given, else the spec's folder. Be honest about what that means: the agent usually
+writes the spec, so the spec folder is only as narrow as where it is saved (a spec saved in
+the home folder allows every picture below it). Save specs in a fresh folder, or pass the
+folder the user named as --image-dir. Files with more than one hard link and paths with
+control characters are refused. --allow-image-outside lifts all of this after asking.
+Photos often carry EXIF data, including GPS position; the JSON lists them under
+image_metadata, and --strip-image-metadata re-saves pixels only before embedding.
+Spec shape is checked before anything is built: each slide an object, fill an object with one
+key per idx ("1" and "01" are the same idx and refused), notes a string, hidden a boolean, at
+most 2,000 characters per paragraph or cell and 200,000 in the spec. A table in a title, date,
+footer or slide-number placeholder replaces it and adds a warning (the slide loses its title).
+Short table rows are padded with empty cells, counted in padded_cells, with a warning.
+--dry-run checks everything and prints each slide's layout, filled and empty idx, and the
+warnings, without writing OUT. JSON "warnings" lists what to tell the user.
 OUT may not be the template, the spec or a symlink, even with --force. Errors from python-pptx
-or the image library come back as exit 2 with a message, not a traceback.
+or the image library, and any unexpected error, come back as exit 2 JSON, not a traceback.
 
 Exit codes: 0 written, 1 spec does not fit the template (unknown layout or placeholder idx,
 nothing written), 2 python-pptx missing, bad spec, unsupported template, output exists,
@@ -138,24 +151,123 @@ def fill_table(slide, ph, rows, where):
     for i, r in enumerate(rows):
         for j in range(cols):
             table.cell(i, j).text = r[j] if j < len(r) else ""
+    return sum(cols - len(r) for r in rows)
 
 
-def image_path(base, rel, allow_outside, n):
-    """Images must sit in the spec's folder or below it, so a spec cannot pull an arbitrary
-    file from disk into a deck that will be shared. --allow-image-outside lifts this."""
+def image_path(base, rel, allow_outside, n, root=None):
+    """Images must sit in the image folder (--image-dir, else the spec's folder) or below it,
+    so a spec cannot pull an arbitrary file from disk into a deck that will be shared.
+    The agent usually writes the spec, so the spec folder is only as narrow as the place it is
+    saved; --image-dir names the boundary explicitly. A file with more than one hard link is
+    refused, because realpath cannot tell where its other names point.
+    --allow-image-outside lifts all of this."""
     if not isinstance(rel, str) or not rel:
         raise pk.Unsupported("slide %d: image must be a path string" % n)
+    if pk._UNSAFE.search(rel) or "\x00" in rel:
+        raise pk.Unsupported("slide %d: image path contains control characters" % n)
+    base = root or base
     if not allow_outside and (os.path.isabs(rel) or rel.startswith("~")):
         raise pk.Unsupported("slide %d: image path must be relative to the spec folder: %s "
                              "(--allow-image-outside to permit)" % (n, rel))
     path = os.path.realpath(os.path.join(base, rel))
-    root = os.path.realpath(base)
-    if not allow_outside and os.path.commonpath([path, root]) != root:
-        raise pk.Unsupported("slide %d: image is outside the spec folder: %s "
-                             "(--allow-image-outside to permit)" % (n, rel))
+    top = os.path.realpath(base)
+    if not allow_outside and os.path.commonpath([path, top]) != top:
+        raise pk.Unsupported("slide %d: image is outside the image folder %s: %s "
+                             "(--allow-image-outside to permit)" % (n, top, rel))
     if not os.path.isfile(path):
         raise pk.Unsupported("slide %d: image not found: %s" % (n, rel))
+    if not allow_outside and os.stat(path).st_nlink > 1:
+        raise pk.Unsupported("slide %d: image has more than one hard link, so its real location "
+                             "cannot be checked: %s (copy it, or --allow-image-outside)" % (n, rel))
     return path
+
+
+def image_metadata(path):
+    """Return {"exif": bool, "gps": bool} for an image, or None if PIL cannot read it."""
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            ex = im.getexif()
+            return {"exif": bool(len(ex)) or "exif" in im.info, "gps": 0x8825 in ex}
+    except Exception:
+        return None
+
+
+def strip_metadata(path, work, n):
+    """Re-save pixels only (no EXIF, GPS, XMP or text chunks) into the work folder."""
+    from PIL import Image
+    with Image.open(path) as im:
+        fmt = im.format or "PNG"
+        out = os.path.join(work, "img%d-%d.%s" % (n, len(os.listdir(work)), fmt.lower()))
+        if im.mode == "P":
+            clean = im.copy()
+            clean.info = {}
+        else:
+            clean = Image.new(im.mode, im.size)
+            clean.paste(im)
+        kw = {"quality": 95} if fmt == "JPEG" else {}
+        clean.save(out, format=fmt, **kw)
+    return out
+
+
+TEXT_CAP = 2000          # characters per paragraph or cell
+SPEC_TEXT_CAP = 200000   # characters in the whole spec
+NO_TABLE = ("TITLE", "CENTER_TITLE", "VERTICAL_TITLE", "DATE", "FOOTER", "SLIDE_NUMBER")
+
+
+def validate(spec):
+    """Check the spec's shape before building, so a bad spec is exit 2 JSON, never a crash."""
+    if not isinstance(spec, dict) or not isinstance(spec.get("slides"), list) or not spec["slides"]:
+        raise pk.Unsupported('spec must be {"slides": [ ... ]} with at least one slide')
+    total = [0]
+
+    def text(v, where):
+        if len(v) > TEXT_CAP:
+            raise pk.Unsupported("%s: text longer than %d characters" % (where, TEXT_CAP))
+        total[0] += len(v)
+    for n, item in enumerate(spec["slides"], 1):
+        if not isinstance(item, dict):
+            raise pk.Unsupported("slide %d: each slide must be an object" % n)
+        lay = item.get("layout", 1)
+        if isinstance(lay, bool) or not isinstance(lay, (int, str)):
+            raise pk.Unsupported("slide %d: layout must be a name or an index number" % n)
+        fill = item.get("fill", {})
+        if not isinstance(fill, dict):
+            raise pk.Unsupported("slide %d: fill must be an object of idx: value" % n)
+        seen = {}
+        for key, value in fill.items():
+            try:
+                idx = int(key)
+            except ValueError:
+                raise pk.Unsupported("slide %d: fill keys are placeholder idx numbers, got %r" % (n, key))
+            if idx in seen:
+                raise pk.Unsupported("slide %d: fill keys %r and %r both name idx %d" % (n, seen[idx], key, idx))
+            seen[idx] = key
+            where = "slide %d idx %d" % (n, idx)
+            if isinstance(value, str):
+                text(value, where)
+            elif isinstance(value, list):
+                for p in value:
+                    if isinstance(p, str):
+                        text(p, where)
+                    elif isinstance(p, dict) and isinstance(p.get("text", ""), str):
+                        text(p.get("text", ""), where)
+            elif isinstance(value, dict) and isinstance(value.get("table"), list):
+                for r in value["table"]:
+                    for c in (r if isinstance(r, list) else []):
+                        if isinstance(c, str):
+                            text(c, where + " table cell")
+            elif not (isinstance(value, dict) and ("image" in value or "table" in value)):
+                raise pk.Unsupported("%s: value must be text, a list of paragraphs, {\"image\"} or {\"table\"}" % where)
+        notes = item.get("notes")
+        if notes is not None:
+            if not isinstance(notes, str):
+                raise pk.Unsupported("slide %d: notes must be a string" % n)
+            text(notes, "slide %d notes" % n)
+        if "hidden" in item and not isinstance(item["hidden"], bool):
+            raise pk.Unsupported("slide %d: hidden must be true or false" % n)
+    if total[0] > SPEC_TEXT_CAP:
+        raise pk.Unsupported("spec holds more than %d characters of text" % SPEC_TEXT_CAP)
 
 
 def build(a):
@@ -181,8 +293,12 @@ def build(a):
         except (OSError, ValueError) as exc:
             raise pk.Unsupported("cannot read spec: %s" % exc)
         base = os.path.dirname(os.path.abspath(a.spec))
-        if not isinstance(spec, dict) or not isinstance(spec.get("slides"), list) or not spec["slides"]:
-            raise pk.Unsupported('spec must be {"slides": [ ... ]} with at least one slide')
+        validate(spec)
+        img_root = os.path.abspath(a.image_dir) if a.image_dir else None
+        if img_root and not os.path.isdir(img_root):
+            raise pk.Unsupported("--image-dir is not a folder: %s" % a.image_dir)
+        image_notes = []
+        warnings = []
         old_ids = [s.slide_id for s in prs.slides]
         report = []
         for n, item in enumerate(spec["slides"], 1):
@@ -198,6 +314,7 @@ def build(a):
             slide = prs.slides.add_slide(lay["_obj"])
             have = {ph.placeholder_format.idx: ph for ph in slide.placeholders}
             filled = []
+            padded = 0
             for key, value in (item.get("fill") or {}).items():
                 try:
                     idx = int(key)
@@ -207,16 +324,33 @@ def build(a):
                     raise SpecError("slide %d (%s): no placeholder idx %d; have %s" % (n, lay["name"], idx, sorted(have)))
                 ph = have[idx]
                 if isinstance(value, dict) and "image" in value:
-                    img = image_path(base, value["image"], a.allow_image_outside, n)
+                    img = image_path(base, value["image"], a.allow_image_outside, n, img_root)
                     if not hasattr(ph, "insert_picture"):
                         raise SpecError("slide %d: placeholder idx %d is not a picture placeholder" % (n, idx))
+                    meta = image_metadata(img)
+                    if meta is None:
+                        raise pk.Unsupported("slide %d: not a readable image: %s" % (n, pk.clean_text(value["image"], 200)))
+                    if a.strip_image_metadata and meta["exif"]:
+                        try:
+                            img = strip_metadata(img, work, n)
+                        except Exception:
+                            raise pk.Unsupported("slide %d: could not strip metadata from %s" % (n, pk.clean_text(value["image"], 200)))
+                        meta = dict(meta, stripped=True)
+                    if meta["exif"]:
+                        image_notes.append(dict(meta, slide=n, image=pk.clean_text(value["image"], 200)))
                     try:
                         ph.insert_picture(img)
-                    except Exception as exc:  # PIL and python-pptx raise many types for bad images
-                        raise pk.Unsupported("slide %d: cannot use image %s: %s"
-                                             % (n, value["image"], pk.clean_text(str(exc), 200)))
+                    except Exception:  # PIL and python-pptx raise many types for bad images
+                        raise pk.Unsupported("slide %d: not a readable image: %s" % (n, pk.clean_text(value["image"], 200)))
                 elif isinstance(value, dict) and "table" in value:
-                    fill_table(slide, ph, value["table"], "slide %d idx %d" % (n, idx))
+                    kind = str(ph.placeholder_format.type).split(".")[-1].split(" ")[0]
+                    if kind in NO_TABLE:
+                        warnings.append("slide %d: the table replaced the %s placeholder (idx %d); the slide has no %s "
+                                        "for the outline and screen readers" % (n, kind.lower(), idx, kind.lower()))
+                    pad = fill_table(slide, ph, value["table"], "slide %d idx %d" % (n, idx))
+                    if pad:
+                        warnings.append("slide %d idx %d: %d empty cells added to even out table rows" % (n, idx, pad))
+                    padded += pad
                 else:
                     if not ph.has_text_frame:
                         raise SpecError("slide %d: placeholder idx %d holds no text" % (n, idx))
@@ -233,7 +367,16 @@ def build(a):
             if item.get("hidden"):
                 slide._element.set("show", "0")
             report.append({"index": n, "layout": lay["name"], "filled": sorted(filled),
-                           "empty": [] if a.remove_empty else empty, "hidden": bool(item.get("hidden"))})
+                           "empty": [] if a.remove_empty else empty, "hidden": bool(item.get("hidden")),
+                           "padded_cells": padded})
+        for im in image_notes:
+            if not im.get("stripped"):
+                warnings.append("slide %d: %s carries EXIF%s data; --strip-image-metadata removes it"
+                                % (im["slide"], im["image"], " and GPS" if im["gps"] else ""))
+        if a.dry_run:
+            return {"ok": True, "dry_run": True, "template": a.template, "output": a.output, "slides": report,
+                    "removed_template_slides": len(old_ids) if not a.keep_template_slides else 0,
+                    "image_metadata": image_notes, "warnings": warnings, "error": None}
         stage = os.path.join(work, "stage.pptx")
         try:
             prs.save(stage)
@@ -258,6 +401,7 @@ def build(a):
         pkg.save(a.output, force=a.force)
         return {"ok": True, "template": a.template, "output": a.output, "slides": report,
                 "removed_template_slides": len(old_ids) if not a.keep_template_slides else 0,
+                "image_metadata": image_notes, "warnings": warnings,
                 "next": "Run inspect_pptx.py OUT --json and render it to check overflow.", "error": None}
 
 
@@ -271,6 +415,11 @@ def main(argv=None):
     ap.add_argument("--remove-empty", action="store_true")
     ap.add_argument("--allow-image-outside", action="store_true",
                     help="allow image paths outside the spec folder (ask the user first)")
+    ap.add_argument("--image-dir", help="folder images must stay in (default: the spec's folder)")
+    ap.add_argument("--strip-image-metadata", action="store_true",
+                    help="re-save images without EXIF, GPS or text chunks before embedding")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="check the spec and show which layout and placeholders each slide uses; write nothing")
     ap.add_argument("--force", action="store_true", help="replace OUT if it exists (no backup)")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
@@ -281,7 +430,7 @@ def main(argv=None):
             if not a.output.lower().endswith(".pptx"):
                 raise pk.Unsupported("OUT must end in .pptx")
             pk.check_output(a.output, a.template, a.spec)
-            if os.path.exists(a.output) and not a.force:
+            if os.path.exists(a.output) and not a.force and not a.dry_run:
                 raise pk.Unsupported("output exists: %s" % a.output)
         res = build(a)
     except SpecError as exc:
@@ -290,6 +439,8 @@ def main(argv=None):
         return 1
     except (pk.Unsupported, pk.Refused) as exc:
         return pk.fail(exc, a.json)
+    except Exception as exc:  # backstop: the JSON contract holds even for a case not foreseen
+        return pk.fail(pk.Unsupported("unexpected error (%s): %s" % (type(exc).__name__, pk.clean_text(str(exc), 200))), a.json)
 
     def human(r):
         if "layouts" in r:
@@ -297,7 +448,14 @@ def main(argv=None):
                 print("%2d  %-28s %s" % (l["index"], l["name"], ", ".join(
                     "idx %s %s" % (p["idx"], p["type"]) for p in l["placeholders"])))
         else:
-            print("wrote %s (%d slides)" % (r["output"], len(r["slides"])))
+            if r.get("dry_run"):
+                for s in r["slides"]:
+                    print("%2d  %-28s fill %s  empty %s" % (s["index"], s["layout"], s["filled"], s["empty"]))
+                print("dry run: nothing written")
+            else:
+                print("wrote %s (%d slides)" % (r["output"], len(r["slides"])))
+            for w in r.get("warnings", []):
+                print("warning: " + w)
     pk.emit(res, a.json, human)
     return 0
 

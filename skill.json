@@ -1,7 +1,7 @@
 {
   "name": "microsoft-powerpoint",
-  "version": "0.1.2",
-  "description": "Use when reading, editing, building, rendering, cleaning or automating PowerPoint decks (.pptx, .pptm, .potx, .ppt, .odp): text split across runs, slide delete/reorder/hide, filling template placeholders, charts with embedded workbooks, notes, sections, PDF or PNG previews, VBA, Office.js or Graph, and checking untrusted or outgoing decks (macros, links, actions, notes, hidden slides, metadata). Not for Google Slides or Keynote files.",
+  "version": "0.1.3",
+  "description": "Use when reading, editing, building, rendering or cleaning PowerPoint decks (.pptx, .pptm, .potx, .ppt, .odp): text across runs, slide delete/reorder/hide, template placeholders, notes, charts, PDF or PNG previews, VBA, Office.js or Graph, and checking untrusted or outgoing decks. Not for Google Slides or Keynote.",
   "entry": "SKILL.md",
   "skill_md_url": "https://raw.githubusercontent.com/skillsaas/microsoft-powerpoint/main/SKILL.md",
   "repository": "https://github.com/skillsaas/microsoft-powerpoint",

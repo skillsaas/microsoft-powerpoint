@@ -19,6 +19,10 @@ mismatch(text, target) -> reason or None
                           blank-looking letters (Hangul fillers U+115F, U+1160, U+3164, U+FFA0;
                           U+034F; Khmer U+17B4, U+17B5)
       "mixed_script"      a shown domain label mixes scripts (Cyrillic "а" inside "pаypal")
+      "punycode_host"     the text shows no domain and the target host has an xn-- label (a
+                          note: the viewer cannot see what the name spells)
+    Invisible also covers U+2800 (braille blank), U+1D159 and U+1D173 to U+1D17A, and
+    variation selectors (U+FE00 to U+FE0F, U+E0100 to U+E01EF) right after a letter or dot.
     E-mail addresses are parsed before domains, so "jane.doe@corp.com" is one address at
     corp.com, not a domain "jane.doe". With a mailto: target the shown address domains must
     match the target's; with a web target the shown domains must.
@@ -36,7 +40,10 @@ from urllib.parse import urlsplit
 SAFE_SCHEMES = {"http", "https", "mailto"}
 _DOTS = str.maketrans({"\u3002": ".", "\uff0e": ".", "\uff61": "."})
 _INVISIBLE = re.compile("[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180e\u200b-\u200f\u202a-\u202e"
-                        "\u2060-\u2064\u2066-\u2069\u3164\ufeff\uffa0]")
+                        "\u2060-\u2064\u2066-\u2069\u2800\u3164\ufeff\uffa0\U0001d159\U0001d173-\U0001d17a]")
+# Variation selectors are normal after an emoji or symbol, but after a letter or dot they only
+# hide inside a word ("paypal\ufe0f.com").
+_VS_IN_WORD = re.compile("[\\w.][\ufe00-\ufe0f\U000e0100-\U000e01ef]")
 # Labels are Unicode word characters, so non-Latin look-alikes are seen too.
 _LABEL = r"[^\W_](?:[\w-]{0,61}[^\W_])?"
 _DOMAIN = re.compile(r"(?<![\w@.-])((?:%s\.)+[^\W\d_][\w-]{0,62})\.?(?![\w-])" % _LABEL)
@@ -131,7 +138,8 @@ def mixed_script(domain):
 
 def mismatch(text, target):
     raw = text or ""
-    if _INVISIBLE.search(raw) or any(unicodedata.category(c) == "Cf" for c in raw):
+    if (_INVISIBLE.search(raw) or _VS_IN_WORD.search(raw)
+            or any(unicodedata.category(c) == "Cf" for c in raw)):
         return "invisible_chars"
     t = unicodedata.normalize("NFKC", raw).translate(_DOTS)
     scheme, host, _ = classify(target)
@@ -146,8 +154,17 @@ def mismatch(text, target):
             if m.group(1):
                 return "userinfo"
             # "paypal.com@evil.io" reads as paypal.com; "jane.doe@corp.com" reads as a person.
+            # Trade-offs, chosen on purpose:
+            # - a common TLD before "@" (com, net, io ...) is always a host;
+            # - a two-letter ending ("ali.pk", "paypal.pk") is ambiguous, so it counts only when
+            #   the address is not at the target's own site ("ali.pk@corp.com" over corp.com
+            #   passes; "paypal.pk@evil.io" over bank.com is flagged);
+            # - a local part whose last label is no TLD ("login.paypal.security@evil.io") reads
+            #   as an address at evil.io and passes; over https://evil.io the viewer is shown
+            #   evil.io, so the link does go where the address says.
             last = user.rsplit(".", 1)[-1].lower() if "." in user else ""
-            looks_host = last in _COMMON_TLDS or (len(last) == 2 and last.isalpha())
+            at_target = bool(host) and same_site(after, host)
+            looks_host = last in _COMMON_TLDS or (len(last) == 2 and last.isalpha() and not at_target)
             if looks_host and not (host and same_site(user, host)):
                 return "userinfo"
     # E-mail addresses first: their domains count, their local parts never do.
@@ -167,6 +184,10 @@ def mismatch(text, target):
         # an address shown over a web or file link: compare its domain with the target
         shown = mail_domains
     if not shown:
+        # Plain words ("Click here") over an internationalized host: the viewer cannot see
+        # what the xn-- name spells. A note, not proof of a lure.
+        if host and any(l.startswith("xn--") for l in host.split(".")):
+            return "punycode_host"
         return None
     if scheme not in SAFE_SCHEMES or not host:
         return "no_web_host"

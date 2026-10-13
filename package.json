@@ -1,6 +1,6 @@
 {
   "name": "microsoft-powerpoint",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Agent skill (SKILL.md) for Microsoft PowerPoint: inspect, edit, build from templates, reorder or delete slides, render in a sandbox and check decks before sharing. Python scripts (lxml), tested references for python-pptx, PresentationML, charts, VBA, Office.js and Microsoft Graph.",
   "license": "MIT",
   "author": "Ali Tanveer",
@@ -55,7 +55,8 @@
     "scripts/*.py",
     "scripts/requirements.txt",
     "tests/smoke_test.py",
-    "tests/fixtures/"
+    "tests/fixtures/",
+    "tests/evals.json"
   ],
   "publishConfig": {
     "access": "public"

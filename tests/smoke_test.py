@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Smoke tests for the microsoft-powerpoint skill. Run: python tests/smoke_test.py [-v]
+"""Smoke tests for the microsoft-powerpoint skill. Run: python tests/smoke_test.py [-v] [--fast]
 
 Uses the committed fixture tests/fixtures/deck.pptx and builds threat decks in a temp folder
 by editing its XML. Needs only Python 3.9+ and lxml. Render tests run when LibreOffice,
 bubblewrap and pdftoppm are present and print SKIP otherwise. python-pptx is used, when
 installed, only to confirm that outputs still open.
+
+--fast skips the LibreOffice runs (the sandboxed render tests and the unsandboxed positive
+control), which take most of the time; use it on each new session, the full run once per setup.
 
 Prints PASS / FAIL / SKIP per test and a summary; exit 1 if anything failed.
 """
@@ -27,6 +30,8 @@ SCRIPTS = os.path.join(ROOT, "scripts")
 TRACKED = os.path.join(ROOT, "tests", "fixtures", "deck.pptx")
 sys.path.insert(0, SCRIPTS)
 VERBOSE = "-v" in sys.argv
+FAST = "--fast" in sys.argv
+SLOW = ("render:", "positive control")
 RESULTS = []
 TMP = tempfile.mkdtemp(prefix="pptx-skill-test-")
 # Tests read a temp copy, so no test can change the tracked fixture; the last test checks it.
@@ -51,7 +56,10 @@ def test(name):
     def deco(fn):
         def wrapped():
             try:
-                r = fn()
+                if FAST and name.startswith(SLOW):
+                    r = "--fast: LibreOffice run skipped"
+                else:
+                    r = fn()
                 status = "SKIP" if isinstance(r, str) else "PASS"
                 RESULTS.append((status, name, r if isinstance(r, str) else ""))
             except AssertionError as exc:
@@ -802,12 +810,15 @@ def t_n3():
     assert rc == 0 and b"evil.io" not in all_bytes(out), o
 
 
-@test("writers refuse OUT that is the input or a symlink, even with --force (build, slides, replace, sanitize, render)")
+@test("writers refuse OUT that is the input (same path, other spelling, hard link) or a symlink, even with --force (build, slides, replace, sanitize, render)")
 def t_same_file():
     src = tmp("same.pptx")
     shutil.copyfile(FIX, src)
     link = tmp("same-link.pptx")
     os.symlink(src, link)
+    hard = tmp("same-hard.pptx")
+    os.link(src, hard)
+    other = os.path.join(TMP, ".", "sub-none", "..", "same.pptx")  # another spelling of src
     before = sha(src)
     spec = tmp("same-spec.json")
     json.dump({"slides": [{"layout": 1, "fill": {"0": "x"}}]}, open(spec, "w"))
@@ -818,7 +829,7 @@ def t_same_file():
     if have_pptx():
         cases.append(("pptx_build.py", [src, spec, None]))
     for script, args in cases:
-        for out in (src, link):
+        for out in (src, link, hard, other):
             argv = [out if x is None else x for x in args] + ["--force", "--json"]
             rc, d, o = run(script, *argv)
             assert rc == 2 and ("input file" in d["error"] or "symbolic link" in d["error"]), (script, out, o)
@@ -867,6 +878,109 @@ def t_build_table():
         json.dump({"slides": [{"layout": 1, "fill": {"1": {"table": bad}}}]}, open(spec, "w"))
         rc, d, o = run("pptx_build.py", FIX, spec, tmp("tbad.pptx"), "--json", "--force")
         assert rc == 2 and "Traceback" not in o and not d["ok"], (bad, o)
+
+
+def build_spec(d0, spec, *extra, out=None):
+    path = os.path.join(d0, "s%d.json" % len(os.listdir(d0)))
+    json.dump(spec, open(path, "w"))
+    out = out or tmp("b%d.pptx" % len(os.listdir(TMP)))
+    return run("pptx_build.py", FIX, path, out, "--json", *extra) + (out,)
+
+
+@test("build: bad spec shapes, duplicate idx, layout true, long text are exit 2 JSON before building")
+def t_spec_shapes():
+    if not have_pptx():
+        return "python-pptx not installed"
+    d0 = tempfile.mkdtemp(dir=TMP)
+    open(os.path.join(d0, "bad.png"), "w").write("not an image")
+    bad = [{"slides": ["x"]}, {"slides": [{"layout": 1, "fill": ["a"]}]},
+           {"slides": [{"layout": 1, "notes": 5}]}, {"slides": [{"layout": 1, "notes": ["a"]}]},
+           {"slides": [{"layout": True}]}, {"slides": [{"layout": 1, "hidden": "yes"}]},
+           {"slides": [{"layout": 1, "fill": {"1": "a", "01": "b"}}]},
+           {"slides": [{"layout": 1, "fill": {"1": "x" * 2001}}]},
+           {"slides": [{"layout": 1, "fill": {"1": {"table": [["x" * 2001]]}}}]},
+           {"slides": [{"layout": 1, "fill": {"1": 5}}]},
+           {"slides": [{"layout": "Picture with Caption", "fill": {"1": {"image": "bad.png"}}}]}]
+    for spec in bad:
+        rc, d, o, out = build_spec(d0, spec)
+        assert rc == 2 and d and not d["ok"] and "Traceback" not in o and not os.path.exists(out), (spec, o)
+        assert " object at 0x" not in o, o
+
+
+@test("build: table over a title and padded rows warn; --dry-run shows the mapping and writes nothing")
+def t_build_warn():
+    if not have_pptx():
+        return "python-pptx not installed"
+    d0 = tempfile.mkdtemp(dir=TMP)
+    rc, d, o, out = build_spec(d0, {"slides": [{"layout": 1, "fill": {"0": {"table": [["a", "b"], ["c"]]}, "1": "x"}}]})
+    assert rc == 0 and len(d["warnings"]) == 2 and "title" in d["warnings"][0] and "1 empty" in d["warnings"][1], o
+    assert d["slides"][0]["padded_cells"] == 1
+    rc, d, o, out = build_spec(d0, {"slides": [{"layout": 1, "fill": {"0": "T", "1": "x"}}]}, "--dry-run")
+    assert rc == 0 and d["dry_run"] and d["slides"][0]["filled"] == [0, 1] and not os.path.exists(out), o
+
+
+@test("build: --image-dir boundary, hard links, NUL in path refused; EXIF/GPS reported and stripped")
+def t_image_boundary():
+    if not have_pptx():
+        return "python-pptx not installed"
+    from PIL import Image
+    d0 = tempfile.mkdtemp(dir=TMP)
+    imgs = os.path.join(d0, "imgs")
+    os.mkdir(imgs)
+    red_png(os.path.join(d0, "here.png"))
+    lay = "Picture with Caption"
+    rc, d, o, out = build_spec(d0, {"slides": [{"layout": lay, "fill": {"1": {"image": "../here.png"}}}]}, "--image-dir", imgs)
+    assert rc == 2 and "outside the image folder" in d["error"], o
+    os.link(os.path.join(d0, "here.png"), os.path.join(d0, "hl.png"))
+    rc, d, o, out = build_spec(d0, {"slides": [{"layout": lay, "fill": {"1": {"image": "hl.png"}}}]})
+    assert rc == 2 and "hard link" in d["error"], o
+    rc, d, o, out = build_spec(d0, {"slides": [{"layout": lay, "fill": {"1": {"image": "a\u0000.png"}}}]})
+    assert rc == 2 and "Traceback" not in o, o
+    im = Image.new("RGB", (8, 8), "red")
+    ex = Image.Exif()
+    ex[0x010F] = "PhoneMaker"
+    ex[0x8825] = {1: "N", 2: (31.0, 30.0, 0.0)}
+    im.save(os.path.join(imgs, "gps.jpg"), exif=ex)
+    spec = {"slides": [{"layout": lay, "fill": {"1": {"image": "gps.jpg"}}}]}
+    rc, d, o, out = build_spec(d0, spec, "--image-dir", imgs)
+    assert rc == 0 and d["image_metadata"][0]["gps"] and any("GPS" in w for w in d["warnings"]), o
+    rc, d, o, out = build_spec(d0, spec, "--image-dir", imgs, "--strip-image-metadata")
+    assert rc == 0 and d["image_metadata"][0]["stripped"] and not d["warnings"], o
+    z = zipfile.ZipFile(out)
+    media = [n for n in z.namelist() if n.startswith("ppt/media/")]
+    assert media and all(not Image.open(io.BytesIO(z.read(n))).getexif() for n in media)
+
+
+@test("links: U+2800 and variation selectors in a word are invisible; punycode host note; userinfo trade-offs")
+def t_links_r3():
+    import pptlinks as lk
+    assert lk.mismatch("paypal\u2800.com", "https://paypal.com") == "invisible_chars"
+    assert lk.mismatch("paypal\ufe0f.com", "https://paypal.com") == "invisible_chars"
+    assert lk.mismatch("paypal\U000e0100.com", "https://paypal.com") == "invisible_chars"
+    assert lk.mismatch("Done \u2705\ufe0f", "https://corp.com") is None
+    assert lk.mismatch("Click here", "https://xn--80ak6aa92e.com") == "punycode_host"
+    assert lk.mismatch("Click here", "https://corp.com") is None
+    assert lk.mismatch("ali.pk@corp.com", "https://corp.com") is None
+    assert lk.mismatch("paypal.pk@evil.io", "https://bank.com") == "userinfo"
+    assert lk.mismatch("paypal.com@evil.io", "https://evil.io") == "userinfo"
+    assert lk.mismatch("login.paypal.security@evil.io", "https://evil.io") is None  # documented trade-off
+
+
+@test("evals: every script and flag named in tests/evals.json exists in that script's --help")
+def t_evals():
+    ev = json.load(open(os.path.join(ROOT, "tests", "evals.json"), encoding="utf-8"))
+    assert len(ev["cases"]) >= 7
+    helps = {}
+    for case in ev["cases"]:
+        assert case["request"] and case["report"], case["id"]
+        for cmd in case["commands"]:
+            script = cmd[0]
+            if script not in helps:
+                p = subprocess.run([sys.executable, os.path.join(SCRIPTS, script), "--help"],
+                                   capture_output=True, text=True)
+                helps[script] = p.stdout
+            for flag in cmd[1:]:
+                assert flag in helps[script], (case["id"], script, flag)
 
 
 @test("build: .potx content type changed only on the main part's Override (parsed, not byte-replaced)")
