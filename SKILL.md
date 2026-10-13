@@ -4,7 +4,7 @@ description: "Use when reading, editing, building, rendering or cleaning PowerPo
 license: MIT
 compatibility: "Python 3.9+ with lxml>=5 for every script, any OS. pptx_build.py also needs python-pptx. pptx_render.py is Linux only: LibreOffice, bubblewrap, and pdftoppm for PNG. PowerPoint is not needed for the scripts; it is the reference for final visual fidelity."
 metadata:
-  version: "0.1.3"
+  version: "0.1.4"
   updated: "2026-10-13"
   tested_with: "Python 3.13.5; lxml 6.1.3; python-pptx 1.0.2; XlsxWriter 3.2.9; markitdown 0.1.7; LibreOffice 25.2.3.2; bubblewrap; poppler pdftoppm; Linux x86_64"
   checked_against: "Office.js names: @types/office-js 1.0.611. Graph conversion and VBA: Microsoft Learn, read 2026-10-13. Not run: PowerPoint, Office.js, a Graph tenant, macOS, Windows."

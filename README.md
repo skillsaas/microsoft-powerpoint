@@ -1,5 +1,7 @@
 # microsoft-powerpoint
 
+**TL;DR:** `microsoft-powerpoint` is a free, MIT-licensed agent skill that teaches AI agents (Claude Code, Cursor, Codex, Gemini CLI and other agents that read SKILL.md skills) to read, edit and build PowerPoint decks without losing formatting, render slide previews in a sandbox, and clean decks before they are shared. Install: `npx skills add skillsaas/microsoft-powerpoint` or `npm install microsoft-powerpoint`.
+
 An agent skill (`SKILL.md`) that teaches AI coding agents to work with Microsoft PowerPoint
 decks safely: read them, edit text without losing formatting, render previews, and clean them
 before they are shared.
@@ -16,15 +18,42 @@ before they are shared.
 - you automate PowerPoint with VBA, an Office.js add-in or Microsoft Graph.
 
 ## Install
-Planned, not yet published (v0.1.1 is under review):
 ```bash
-npx @skillsaas/cli add microsoft-powerpoint      # planned
-npx skills add skillsaas/microsoft-powerpoint    # planned
+npx skills add skillsaas/microsoft-powerpoint    # skills CLI, reads SKILL.md at the repo root
+npm install microsoft-powerpoint                 # files land in node_modules/microsoft-powerpoint/
+# Planned, not yet published: npx @skillsaas/cli add microsoft-powerpoint
 ```
-Today: copy this folder into your agent's skills folder (for example `.claude/skills/`
-or `.agents/skills/`) and run `pip install -r scripts/requirements.txt`.
+Or copy this folder into your agent's skills folder (for example `.claude/skills/`
+or `.agents/skills/`), then run `pip install -r scripts/requirements.txt`.
 
 Try it: `python scripts/inspect_pptx.py tests/fixtures/deck.pptx`, then `python tests/smoke_test.py`.
+
+## What it does
+- `inspect_pptx.py`: read-only inventory and risk list (macros, OLE objects, linked pictures, click actions that run programs, notes, comments, hidden slides).
+- `pptx_replace.py`: replaces text split across runs, with an `--expect` count.
+- `pptx_slides.py`: deletes, hides, unhides and moves slides completely (python-pptx has no API for this).
+- `pptx_build.py`: builds a new deck from a `.pptx` or `.potx` template by placeholder (needs python-pptx), with `--dry-run`.
+- `pptx_sanitize.py` share-check and share-ready copy; `pptx_render.py` PDF or PNG with LibreOffice in bubblewrap (Linux).
+- Python 3.9+ with lxml; references for python-pptx, PresentationML, charts, VBA, Office.js and Microsoft Graph.
+
+## FAQ
+**What is the microsoft-powerpoint skill?**
+An Agent Skills package (a `SKILL.md` plus references and Python scripts) that tells an AI agent how to work with PowerPoint decks correctly. It is unofficial and not affiliated with Microsoft.
+
+**How do I delete or reorder slides with python-pptx?**
+python-pptx has no API for it. `pptx_slides.py` deletes, hides and moves slides and removes the parts a deleted slide leaves behind.
+
+**Why does replacing text in a .pptx lose formatting?**
+Setting `text_frame.text` rewrites the runs. `pptx_replace.py` replaces text across runs and keeps their formatting.
+
+**How do I make slide images or a PDF without PowerPoint?**
+`pptx_render.py` uses LibreOffice in a bubblewrap sandbox on Linux; PowerPoint remains the reference for exact visual fidelity.
+
+**How do I install it in Claude Code?**
+`npx skills add skillsaas/microsoft-powerpoint`, or copy the folder to `~/.claude/skills/microsoft-powerpoint/`, then `pip install -r scripts/requirements.txt`.
+
+**How do I clean a deck before sending it?**
+`pptx_sanitize.py` lists speaker notes, comments, hidden slides and metadata and writes a share-ready copy.
 
 ## Contents
 | Path | What |
@@ -45,7 +74,7 @@ poppler-utils. See the catalog at https://github.com/skillsaas/index.
 
 ## Status and maintenance
 
-Version 0.1.3, pre-release: not on npm yet and not run on macOS or Windows. Each version is
+Version 0.1.4, published on npm and GitHub (pre-1.0). Smoke tests run on Linux only; not run on macOS or Windows. Each version is
 reviewed by a panel of people and AI agents before the next; CHANGELOG.md lists what changed and
 why. Versions follow semver; until 1.0, a minor bump may change script flags or JSON fields, and
 the CHANGELOG says so. Run `python tests/smoke_test.py` after install to check your setup.

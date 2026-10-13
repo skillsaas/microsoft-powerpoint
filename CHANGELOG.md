@@ -1,7 +1,13 @@
 # Changelog
 
+## 0.1.4 (2026-10-13)
+Discovery only; no script or skill behaviour changed. The merge script and chart support planned
+after 0.1.3 move to the next version.
+- npm description rewritten as a one-sentence answer (what, which app, which agents), under 250 characters; more npm keywords and GitHub topics.
+- README opens with a TL;DR and adds "What it does" and an FAQ; install lines now list the live npm and GitHub installs.
+
 ## 0.1.3 (2026-10-13)
-Fixes from review round 3. Not published.
+Fixes from review round 3. Published on npm and GitHub.
 - `pptx_build.py` checks the spec's shape before building: a slide that is not an object,
   `fill` not an object, `"1"` and `"01"` for one idx, `notes` not a string, `"layout": true`,
   `hidden` not a boolean, over 2,000 characters in a paragraph or cell or 200,000 in the spec
