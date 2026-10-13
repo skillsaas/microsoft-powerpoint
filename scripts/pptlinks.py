@@ -105,6 +105,11 @@ def mismatch(text, target):
         return "invisible_chars"
     t = unicodedata.normalize("NFKC", raw).translate(_DOTS)
     scheme, host, _ = classify(target)
+    try:
+        if scheme in ("http", "https") and urlsplit((target or "").strip()).username is not None:
+            return "userinfo"  # https://bank.com@evil.example/ goes to evil.example
+    except ValueError:
+        return "userinfo"
     if scheme != "mailto":
         for m in _USERINFO.finditer(t):
             user, after = m.group(2), m.group(3)

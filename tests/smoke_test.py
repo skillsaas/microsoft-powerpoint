@@ -24,11 +24,15 @@ import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, "scripts")
-FIX = os.path.join(ROOT, "tests", "fixtures", "deck.pptx")
+TRACKED = os.path.join(ROOT, "tests", "fixtures", "deck.pptx")
 sys.path.insert(0, SCRIPTS)
 VERBOSE = "-v" in sys.argv
 RESULTS = []
 TMP = tempfile.mkdtemp(prefix="pptx-skill-test-")
+# Tests read a temp copy, so no test can change the tracked fixture; the last test checks it.
+FIX = os.path.join(TMP, "deck.pptx")
+shutil.copyfile(TRACKED, FIX)
+TRACKED_SHA = __import__("hashlib").sha256(open(TRACKED, "rb").read()).hexdigest()
 
 
 def run(script, *args):
@@ -458,6 +462,284 @@ def t_residue():
         ps.do_comments = orig
 
 
+
+# ---------------------------------------------------------------- 0.1.1 security review fixes
+def hostile_deck(out):
+    """VBA under a neutral name (found by content type and rel), a program action on the master,
+    a javascript link and a mismatched link in notes, an external picture in the theme rels."""
+    return mutate(out, edits={
+        "[Content_Types].xml": [
+            (b"application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml",
+             b"application/vnd.ms-powerpoint.presentation.macroEnabled.main+xml"),
+            (b"</Types>", b'<Override PartName="/ppt/stuff/data.dat" ContentType="application/vnd.ms-office.vbaProject"/></Types>')],
+        "ppt/_rels/presentation.xml.rels": [(b"</Relationships>",
+            b'<Relationship Id="rIdV" Type="http://schemas.microsoft.com/office/2006/relationships/vbaProject" Target="stuff/data.dat"/></Relationships>')],
+        "ppt/slideMasters/slideMaster1.xml": [(b"</p:spTree>",
+            b'<p:sp><p:nvSpPr><p:cNvPr id="99" name="M"><a:hlinkClick r:id="rIdMP" action="ppaction://program"/></p:cNvPr><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr/></p:sp></p:spTree>')],
+        "ppt/slideMasters/_rels/slideMaster1.xml.rels": [(b"</Relationships>",
+            rel("rIdMP", "hyperlink", "file:///C:/x.exe") + b"</Relationships>")],
+        "ppt/notesSlides/notesSlide1.xml": [(b"<a:r><a:t>Q3 revenue talking point",
+            b'<a:r><a:rPr><a:hlinkClick r:id="rIdNJ"/></a:rPr><a:t>www.bank.com</a:t></a:r>'
+            b'<a:r><a:rPr><a:hlinkClick r:id="rIdNK"/></a:rPr><a:t>open</a:t></a:r><a:r><a:t>Q3 revenue talking point')],
+        "ppt/notesSlides/_rels/notesSlide1.xml.rels": [(b"</Relationships>",
+            rel("rIdNJ", "hyperlink", "https://evil.example/login") + rel("rIdNK", "hyperlink", "javascript:alert(1)")
+            + b"</Relationships>")],
+    }, add={"ppt/stuff/data.dat": b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1 vba",
+            "ppt/theme/_rels/theme1.xml.rels": b'<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            + rel("rIdT", "image", "http://beacon.example/t.png") + b"</Relationships>"})
+
+
+def all_bytes(path):
+    z = zipfile.ZipFile(path)
+    return b"".join(z.read(n) for n in z.namelist())
+
+
+@test("H1: VBA found by content type and relationship, not file name; macro-enabled type flagged")
+def t_h1():
+    p = hostile_deck(tmp("hostile.pptx"))
+    rc, d, o = run("inspect_pptx.py", p, "--json")
+    risks = {r["risk"]: r for r in d["risks"]}
+    assert risks["vba-macros"]["detail"] == ["ppt/stuff/data.dat"], o
+    assert risks["macro-enabled-type"]["detail"] == "pptm"
+    out = tmp("hostile-clean.pptx")
+    rc, d, o = run("pptx_sanitize.py", p, out, "--remove-macros", "--json")
+    assert rc == 0, o
+    z = zipfile.ZipFile(out)
+    assert "ppt/stuff/data.dat" not in z.namelist() and b"macroEnabled" not in z.read("[Content_Types].xml")
+    assert b"vbaProject" not in all_bytes(out) and consistent(out) and opens(out)
+
+
+@test("H2: actions and risky schemes found in masters and notes, not only slides; removed")
+def t_h2():
+    p = hostile_deck(tmp("hostile2.pptx"))
+    rc, d, o = run("inspect_pptx.py", p, "--json")
+    acts = [(r["part"], r["detail"]) for r in d["risks"] if r["risk"] == "action"]
+    assert ("ppt/slideMasters/slideMaster1.xml", "runs a program when clicked") in acts, acts
+    assert ("ppt/notesSlides/notesSlide1.xml", "link scheme javascript") in acts, acts
+    out = tmp("hostile2-clean.pptm")
+    rc, d, o = run("pptx_sanitize.py", p, out, "--remove-active", "--json")
+    assert rc == 0, o
+    b = all_bytes(out)
+    assert b"javascript:" not in b and b"ppaction://program" not in b and b"x.exe" not in b
+    assert b"Q3 revenue talking point" in b, "link removal must keep the notes text"
+    assert consistent(out) and opens(out)
+
+
+@test("M1: external targets in any .rels (theme) found and removed")
+def t_m1():
+    p = hostile_deck(tmp("hostile3.pptx"))
+    rc, d, o = run("inspect_pptx.py", p, "--json")
+    assert any(e["host"] == "beacon.example" and e["part"] == "ppt/theme/theme1.xml" for e in d["external"]), o
+    out = tmp("hostile3-clean.pptm")
+    rc, d, o = run("pptx_sanitize.py", p, out, "--remove-active", "--json")
+    assert rc == 0 and b"beacon.example" not in all_bytes(out), o
+    assert consistent(out)
+
+
+@test("M2: link text vs target: other domain, userinfo, no web host, invisible chars; same site passes")
+def t_m2():
+    import pptlinks as lk
+    cases = [("www.bank.com", "https://evil.example/login", "different_domain"),
+             ("https://bank.com", "https://bank.com@evil.example/", "userinfo"),
+             ("bank.com", "file:///C:/x.exe", "no_web_host"),
+             ("bank\u200b.com", "https://bank.com/", "invisible_chars"),
+             ("www.bank.com", "https://login.bank.com/x", None),
+             ("finance.gov.pk", "https://evil.gov.pk/", "different_domain"),
+             ("Click here", "https://anything.example/", None)]
+    for text, target, want in cases:
+        got = lk.mismatch(text, target)
+        assert got == want, (text, target, got, want)
+    assert lk.classify("javascript:alert(1)")[2] and lk.classify("data:text/html,x")[2]
+    assert lk.classify("\\\\host\\share")[2] and lk.classify("../x.pptx")[2]
+    assert not lk.classify("https://example.com")[2] and not lk.classify("mailto:a@b.c")[2]
+    p = hostile_deck(tmp("hostile4.pptx"))
+    rc, d, o = run("inspect_pptx.py", p, "--json")
+    mm = [r for r in d["risks"] if r["risk"] == "mismatched-link"]
+    assert mm and mm[0]["text"] == "www.bank.com" and mm[0]["detail"] == "different_domain", o
+    rc, d, o = run("pptx_sanitize.py", p, "--check-clean", "--json")
+    assert rc == 1 and "mismatched-link" in str(d["residue"]), o
+
+
+@test("L1: control, bidi and zero-width characters refused in replacement text (exit 2)")
+def t_l1():
+    for bad in ("evil\u202egnp", "a\x01b", "zero\u200bwidth"):
+        out = tmp("l1.pptx")
+        rc, d, o = run("pptx_replace.py", FIX, out, "--find", "Q3", "--replace", bad, "--json")
+        assert rc == 2 and not os.path.exists(out), (bad, o)
+    rc, d, o = run("pptx_replace.py", FIX, tmp("l1b.pptx"), "--find", "(Q3)", "--replace", "\\1\u202e",
+                   "--regex", "--json")
+    assert rc == 2, o
+
+
+@test("L2: a bad pattern or child error is reported as such, not as a timeout")
+def t_l2():
+    t0 = time.time()
+    rc, d, o = run("pptx_replace.py", FIX, tmp("l2.pptx"), "--find", "(Q3)", "--replace", "\\9", "--regex", "--json")
+    assert rc == 2 and "timeout" not in d["error"].lower() and "timed out" not in d["error"].lower(), o
+    assert time.time() - t0 < 4, "error should be immediate"
+
+
+@test("L3: metadata --check-clean and --strip-metadata cover the same fields incl title, revision, Template, TotalTime")
+def t_l3():
+    import pptpkg as pk
+    for f in ("title", "revision", "creator", "lastModifiedBy"):
+        assert f in pk.CORE_STRIP, f
+    for f in ("Template", "TotalTime", "Company", "Manager", "HyperlinkBase"):
+        assert f in pk.APP_STRIP, f
+    p = mutate(tmp("meta.pptx"), edits={
+        "docProps/core.xml": [(b"<dc:title/>", b"<dc:title>Secret plan</dc:title>")],
+        "docProps/app.xml": [(b"</Properties>", b"<Template>C:\\Users\\jane\\t.potx</Template></Properties>")]})
+    rc, d, o = run("inspect_pptx.py", p, "--json")
+    meta = [r for r in d["risks"] if r["risk"] == "metadata"][0]["detail"]
+    assert {"title", "revision", "TotalTime", "Template"} <= set(meta), meta
+    out = tmp("meta-clean.pptx")
+    rc, d, o = run("pptx_sanitize.py", p, out, "--strip-metadata", "--json")
+    assert rc == 0, o
+    rc, d, o = run("inspect_pptx.py", out, "--json")
+    assert not [r for r in d["risks"] if r["risk"] == "metadata"], o
+    z = zipfile.ZipFile(out)
+    b = b"".join(z.read(n) for n in z.namelist() if n.startswith("docProps/"))  # comment authors are --remove-comments
+    for secret in (b"Secret plan", b"jane", b"Jane Secret", b"Contoso"):
+        assert secret not in b, secret
+    rc, d, o = run("pptx_sanitize.py", out, "--check-clean", "--json")
+    assert "metadata" not in str(d.get("residue")), o
+
+
+@test("L4: --check-clean and write results state clean_scope and that ok is not a safety verdict")
+def t_l4():
+    rc, d, o = run("pptx_sanitize.py", FIX, "--check-clean", "--json")
+    sc = d["clean_scope"]
+    assert sc["checked"] and any("visible slide text" in x for x in sc["not_checked"]), o
+    assert "not that the deck is safe" in d["note"]
+    rc, d, o = run("pptx_sanitize.py", FIX, tmp("l4.pptx"), "--all", "--json")
+    assert rc == 0 and d["clean_scope"]["not_checked"], o
+
+
+@test("L6: render checks content not extension; zip renamed .ppt and odp without content.xml refused; memory cap")
+def t_l6():
+    import pptx_render as pr
+    ppt = tmp("renamed.ppt")
+    shutil.copyfile(FIX, ppt)
+    rc, d, o = run("pptx_render.py", ppt, tmp("renamed.pdf"), "--json")
+    assert rc == 2 and not os.path.exists(tmp("renamed.pdf")), o
+    odp = tmp("fake.odp")
+    with zipfile.ZipFile(odp, "w") as z:
+        z.writestr("mimetype", "application/vnd.oasis.opendocument.presentation")
+    rc, d, o = run("pptx_render.py", odp, tmp("fake.pdf"), "--json")
+    assert rc in (2, 3) and not os.path.exists(tmp("fake.pdf")), o
+    bomb = tmp("bomb.odp")
+    with zipfile.ZipFile(bomb, "w") as z:
+        z.writestr("content.xml", "<a/>")
+        for i in range(12000):
+            z.writestr("x/%d" % i, "")
+    rc, d, o = run("pptx_render.py", bomb, tmp("bomb.pdf"), "--json")
+    assert rc == 3, o
+    rc, d, o = run("pptx_render.py", FIX, tmp("m.pdf"), "--memory-mb", "100", "--json")
+    assert rc == 2 and "memory" in d["error"], o
+    assert pr.MEMORY_MB >= 512
+
+
+# ---------------------------------------------------------------- pptx_slides.py
+def order(path):
+    rc, d, o = run("inspect_pptx.py", path, "--json")
+    return [s["title"] for s in d["slides"]], d
+
+
+@test("slides: delete, move, hide, unhide; sections stay consistent; opens")
+def t_slides():
+    out = tmp("sl.pptx")
+    rc, d, o = run("pptx_slides.py", FIX, out, "--delete", "2", "--move", "3:1", "--expect-slides", "3", "--json")
+    assert rc == 0, o
+    ORIG = order(FIX)[0]
+    titles, d = order(out)
+    assert len(titles) == 3 and titles[0] == ORIG[3], (titles, ORIG)
+    assert b"Q3 revenue draft" not in all_bytes(out), "deleted slide text must be gone from the package"
+    assert consistent(out) and opens(out)
+    assert sum(len(s["slide_ids"]) for s in d["sections"]) == 3
+    out2 = tmp("sl2.pptx")
+    rc, _, o = run("pptx_slides.py", FIX, out2, "--hide", "1", "--unhide", "2", "--json")
+    assert rc == 0, o
+    _, d2 = order(out2)
+    assert [s["hidden"] for s in d2["slides"]][:2] == [True, False], d2["slides"]
+
+
+@test("slides: refuses deleting every slide, bad numbers, --expect-slides mismatch; --dry-run writes nothing")
+def t_slides_refuse():
+    rc, d, o = run("pptx_slides.py", FIX, tmp("none.pptx"), "--delete", "1-4", "--json")
+    assert rc == 2 and not os.path.exists(tmp("none.pptx")), o
+    rc, d, o = run("pptx_slides.py", FIX, tmp("bad.pptx"), "--delete", "9", "--json")
+    assert rc == 2 and not os.path.exists(tmp("bad.pptx")), o
+    rc, d, o = run("pptx_slides.py", FIX, tmp("exp.pptx"), "--delete", "1", "--expect-slides", "7", "--json")
+    assert rc == 1 and not os.path.exists(tmp("exp.pptx")), o
+    rc, d, o = run("pptx_slides.py", FIX, tmp("dry.pptx"), "--delete", "1", "--dry-run", "--json")
+    assert rc == 0 and not os.path.exists(tmp("dry.pptx")), o
+
+
+# ---------------------------------------------------------------- pptx_build.py
+def have_pptx():
+    try:
+        import pptx  # noqa
+        return True
+    except ImportError:
+        return False
+
+
+def potx(out):
+    zin = zipfile.ZipFile(FIX)
+    with zipfile.ZipFile(out, "w") as z:
+        for i in zin.infolist():
+            d = zin.read(i.filename)
+            if i.filename == "[Content_Types].xml":
+                d = d.replace(b"presentationml.presentation.main+xml", b"presentationml.template.main+xml")
+            z.writestr(i, d)
+    return out
+
+
+@test("build: --list-layouts gives placeholder idx; spec fills by idx from a .potx; template slides and sections removed")
+def t_build():
+    if not have_pptx():
+        return "python-pptx not installed"
+    tpl = potx(tmp("t.potx"))
+    rc, d, o = run("pptx_build.py", "--list-layouts", tpl, "--json")
+    assert rc == 0 and d["layouts"][0]["name"] == "Title Slide", o
+    assert 0 in [p["idx"] for p in d["layouts"][1]["placeholders"]]
+    red_png(tmp("pic.png"))
+    spec = tmp("spec.json")
+    json.dump({"slides": [
+        {"layout": "Title Slide", "fill": {"0": "Quarterly review", "1": "October 2026"}},
+        {"layout": 1, "fill": {"0": "Results", "1": ["Revenue up", {"text": "EMEA led", "level": 1}]}, "notes": "Say July."},
+        {"layout": "Picture with Caption", "fill": {"0": "Site", "1": {"image": "pic.png"}}, "hidden": True}]},
+        open(spec, "w"))
+    out = tmp("built.pptx")
+    rc, d, o = run("pptx_build.py", tpl, spec, out, "--json")
+    assert rc == 0 and d["slides"][2]["empty"] == [2], o
+    titles, d2 = order(out)
+    assert titles == ["Quarterly review", "Results", "Site"], titles
+    assert d2["slides"][2]["hidden"] and d2["sections"] == []
+    assert b"Q3 revenue" not in all_bytes(out), "template slide text must be gone"
+    from pptx import Presentation
+    s = Presentation(out).slides[1]
+    body = [ph for ph in s.placeholders if ph.placeholder_format.idx == 1][0]
+    assert [p.level for p in body.text_frame.paragraphs] == [0, 1]
+    assert s.notes_slide.notes_text_frame.text == "Say July."
+    assert consistent(out)
+
+
+@test("build: unknown placeholder idx or layout exits 1 and writes nothing; unsafe text exits 2")
+def t_build_refuse():
+    if not have_pptx():
+        return "python-pptx not installed"
+    for i, sl in enumerate(({"layout": 1, "fill": {"7": "x"}}, {"layout": "No such layout"}, {"layout": 99})):
+        spec = tmp("bad%d.json" % i)
+        json.dump({"slides": [sl]}, open(spec, "w"))
+        rc, d, o = run("pptx_build.py", FIX, spec, tmp("bad%d.pptx" % i), "--json")
+        assert rc == 1 and not os.path.exists(tmp("bad%d.pptx" % i)), o
+    spec = tmp("bidi.json")
+    json.dump({"slides": [{"layout": 1, "fill": {"0": "a\u202eb"}}]}, open(spec, "w"))
+    rc, d, o = run("pptx_build.py", FIX, spec, tmp("build-bidi.pptx"), "--json")
+    assert rc == 2 and not os.path.exists(tmp("build-bidi.pptx")), o
+
+
 # ---------------------------------------------------------------- render
 def render_ready():
     import pptx_render as pr
@@ -613,7 +895,8 @@ def t_release():
     assert "scripts" not in pj or not any(k in pj.get("scripts", {}) for k in ("install", "postinstall", "preinstall"))
     for f in pj["files"]:
         assert os.path.exists(os.path.join(ROOT, f.split("*")[0])), f
-    for s in ("inspect_pptx.py", "pptx_sanitize.py", "pptx_replace.py", "pptx_render.py"):
+    for s in ("inspect_pptx.py", "pptx_sanitize.py", "pptx_replace.py", "pptx_render.py", "pptx_slides.py",
+              "pptx_build.py"):
         assert s in skill, s + " not in SKILL.md"
         assert "Exit codes" in open(os.path.join(SCRIPTS, s)).read()
 
@@ -629,6 +912,11 @@ def t_dash():
                 if "\u2014" in open(os.path.join(d, f), encoding="utf-8").read():
                     bad.append(f)
     assert not bad, bad
+
+
+@test("L5: the tracked fixture is unchanged after the whole run")
+def t_fixture_untouched():
+    assert sha(TRACKED) == TRACKED_SHA, "tests modified tests/fixtures/deck.pptx"
 
 
 if __name__ == "__main__":

@@ -202,7 +202,9 @@ def main(argv=None):
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
     global MEMORY_MB
-    MEMORY_MB = max(512, a.memory_mb)
+    if a.memory_mb < 512:
+        return pk.fail(pk.Unsupported("--memory-mb must be at least 512 (a smaller cap only makes LibreOffice fail)"), a.json)
+    MEMORY_MB = a.memory_mb
     if a.check:
         res = check()
         pk.emit(res, a.json, lambda r: print(json.dumps(r, indent=2)))
