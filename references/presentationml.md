@@ -42,7 +42,8 @@ Content types of the main part (*tested* in the scripts' detection): presentatio
   (`ppaction://hlinksldjump` relationships of type `.../slide`). *Tested*: python-pptx's
   common delete recipe left `slide2.xml` in the package because slide 1 still linked to it,
   and left a stale section id. `inspect_pptx.py` reports `unlisted_slide_parts` and
-  `stale_section_ids`; `pptx_sanitize.py --remove-hidden-slides` removes both.
+  `stale_section_ids`; `pptx_sanitize.py --remove-hidden-slides` removes both, and
+  `pptx_slides.py --delete` does the whole list above in one step.
 
 ## Masters, layouts, placeholders and inheritance
 - Each slide has exactly one layout relationship; each layout one master.

@@ -23,7 +23,7 @@ Fixes from review round 1. Not published.
 - New `pptx_build.py`: build from the user's .pptx or .potx by placeholder idx, `--list-layouts`.
 - SKILL.md: shorter description, quick start with real output, platform matrix, read/write
   marks, input and output per script, no-render path, common mistakes, reference load table.
-- Tests: 43 (was 29); tests use a temp copy of the fixture and check the tracked file is
+- Tests: 45 (was 29), including doc checks that run the duplicate-slide recipe; tests use a temp copy of the fixture and check the tracked file is
   unchanged; `make_fixtures.py` writes to a temp folder unless `--write`.
 - `requirements.txt` pins `lxml>=5`; `skill.json` has `tested_with` and `not_tested`.
 

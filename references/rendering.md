@@ -14,7 +14,10 @@ bubblewrap with `--unshare-all` (no network, new PID/IPC/UTS/user namespaces), r
 fonts and the linker cache, `/etc/libreoffice`, empty `/tmp` and `/run`, and one work folder
 with a private copy of the input and a fresh LibreOffice profile (macro security very high,
 macro execution disabled, untrusted referer links blocked). No home folder, no other user files,
-minimal environment, process group killed at `--timeout`. Public files under `/usr` remain visible.
+minimal environment, process group killed at `--timeout`, address space capped by `--memory-mb`
+(default 4096, minimum 512). Public files under `/usr` remain visible. The input is checked
+by content first: an OOXML deck goes through the same zip and XML checks as the other scripts,
+an .odp gets the zip caps and must hold `content.xml`, and a zip named `.ppt` is refused.
 
 ## Commands and tested behavior
 ```bash
@@ -49,4 +52,8 @@ To check text overflow, compare the rendered images with the text from `inspect_
 ## Timeouts and failures
 Default 180 s. Exit 3 on timeout (process group killed, nothing written); retry once with
 `--timeout 600` for large media decks. Exit 1 when LibreOffice ran and wrote nothing (often a
-corrupt or unsupported deck): run `inspect_pptx.py` to see why.
+corrupt or unsupported deck): run `inspect_pptx.py` to see why. A very large deck can also hit
+the memory cap; retry once with `--memory-mb 8192`.
+
+`--to pptx` (from .ppt or .odp) gives a new package that LibreOffice wrote: inspect it, and
+sanitize it before sharing, as you would any received deck.

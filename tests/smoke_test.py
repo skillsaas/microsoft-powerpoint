@@ -914,6 +914,34 @@ def t_release():
         assert "Exit codes" in open(os.path.join(SCRIPTS, s)).read()
 
 
+@test("docs: automation.md keeps the unsaved-path guard, PathSeparator, named PDF args and curl -L note")
+def t_docs_automation():
+    t = open(os.path.join(ROOT, "references", "automation.md"), encoding="utf-8").read()
+    for needle in ('ActivePresentation.Path = ""', "Application.PathSeparator", "PrintHiddenSlides:=msoFalse",
+                   "curl -sS -L", "ppPlaceholderBody", "GroupItems", "Table.Cell", "nnn#", "UseDestinationTheme",
+                   "PowerPointApi 1.9", "2 MB"):
+        assert needle in t, needle
+
+
+@test("docs: the duplicate-slide recipe in python-pptx.md runs and leaves no broken references")
+def t_docs_duplicate():
+    if not have_pptx():
+        return "python-pptx not installed"
+    t = open(os.path.join(ROOT, "references", "python-pptx.md"), encoding="utf-8").read()
+    code = [b for b in t.split("```python")[1:] if "def duplicate" in b][0].split("```")[0]
+    ns = {}
+    exec(code, ns)  # the recipe text itself, so the doc cannot drift from what was tested
+    from pptx import Presentation
+    prs = Presentation(FIX)
+    ns["duplicate"](prs, 0)
+    out = tmp("dup.pptx")
+    prs.save(out)
+    rc, d, o = run("inspect_pptx.py", out, "--json")
+    assert rc == 0 and d["totals"]["slides"] == 5 and d["slides"][4]["title"] == d["slides"][0]["title"], o
+    assert not [r for r in d["risks"] if r["risk"] == "broken-slide-reference"]
+    assert consistent(out)
+
+
 @test("release: no em dashes in shipped files")
 def t_dash():
     bad = []
