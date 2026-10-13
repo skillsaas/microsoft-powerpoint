@@ -68,6 +68,11 @@ MACRO_FREE = {
 # Section list extension URI used by PowerPoint 2010 and later.
 SECTION_EXT = "{521415D9-36F7-43E2-AB2F-B90AF26B5E84}"
 
+# Document properties the share-check reports and --strip-metadata removes (one list for both).
+CORE_STRIP = ("creator", "lastModifiedBy", "lastPrinted", "keywords", "description", "subject", "category",
+              "contentStatus", "identifier", "title", "revision", "language", "version")
+APP_STRIP = ("Company", "Manager", "HyperlinkBase", "Template", "TotalTime", "HeadingPairs", "TitlesOfParts")
+
 MAX_MEMBERS = 10000
 MAX_TOTAL = 1024 * 1024 * 1024  # 1 GiB uncompressed (decks carry video)
 MAX_PART = 64 * 1024 * 1024     # one XML part
@@ -146,6 +151,37 @@ def resolve(source_part, target):
     return posixpath.normpath(posixpath.join(posixpath.dirname(source_part), target))
 
 
+def check_zip(zf):
+    """Zip caps and name checks shared by every script (also used for .odp before rendering).
+
+    Caps are read from the module at call time, so tests can lower them.
+    """
+    infos = zf.infolist()
+    if len(infos) > MAX_MEMBERS:
+        raise Refused("too many zip entries (%d > %d)" % (len(infos), MAX_MEMBERS))
+    seen, seen_low, total = set(), set(), 0
+    for info in infos:
+        n = info.filename
+        if n in seen:
+            raise Refused("duplicate zip entry: %s" % clean_text(n, 200))
+        if n.lower() in seen_low:
+            raise Refused("zip entries differ only by case: %s" % clean_text(n, 200))
+        seen.add(n)
+        seen_low.add(n.lower())
+        if ".." in n.split("/") or n.startswith("/") or "\\" in n:
+            raise Refused("unsafe zip entry name: %s" % clean_text(n, 200))
+        total += info.file_size
+        if n.endswith((".xml", ".rels")):
+            if info.file_size > MAX_PART:
+                raise Refused("XML part too large: %s" % n)
+            if info.compress_size and info.file_size / max(info.compress_size, 1) > MAX_XML_RATIO \
+                    and info.file_size > 1024 * 1024:
+                raise Refused("suspicious compression ratio in %s" % n)
+    if total > MAX_TOTAL:
+        raise Refused("uncompressed size %d exceeds cap %d" % (total, MAX_TOTAL))
+    return infos
+
+
 class Package:
     """Read-only view of a presentation package, with edits kept in memory until save()."""
 
@@ -165,29 +201,7 @@ class Package:
             self.zf = zipfile.ZipFile(path)
         except zipfile.BadZipFile as exc:
             raise Unsupported("corrupt zip: %s" % exc)
-        infos = self.zf.infolist()
-        if len(infos) > MAX_MEMBERS:
-            raise Refused("too many zip entries (%d > %d)" % (len(infos), MAX_MEMBERS))
-        seen, seen_low, total = set(), set(), 0
-        for info in infos:
-            n = info.filename
-            if n in seen:
-                raise Refused("duplicate zip entry: %s" % clean_text(n, 200))
-            if n.lower() in seen_low:
-                raise Refused("zip entries differ only by case: %s" % clean_text(n, 200))
-            seen.add(n)
-            seen_low.add(n.lower())
-            if ".." in n.split("/") or n.startswith("/") or "\\" in n:
-                raise Refused("unsafe zip entry name: %s" % clean_text(n, 200))
-            total += info.file_size
-            if n.endswith((".xml", ".rels")):
-                if info.file_size > MAX_PART:
-                    raise Refused("XML part too large: %s" % n)
-                if info.compress_size and info.file_size / max(info.compress_size, 1) > MAX_XML_RATIO \
-                        and info.file_size > 1024 * 1024:
-                    raise Refused("suspicious compression ratio in %s" % n)
-        if total > MAX_TOTAL:
-            raise Refused("uncompressed size %d exceeds cap %d" % (total, MAX_TOTAL))
+        infos = check_zip(self.zf)
         self.names = [i.filename for i in infos]
         self._lower = {n.lower(): n for n in self.names}
         self.changed = {}    # name -> bytes (or etree root)
@@ -242,6 +256,21 @@ class Package:
             out.append({"id": r.get("Id"), "type": r.get("Type", ""), "target": tgt,
                         "external": ext, "part": None if ext else resolve(part or "", tgt),
                         "el": r})
+        return out
+
+    def all_rels(self):
+        """(source part or None, rel) for every .rels file in the package."""
+        out = []
+        for n in self.names:
+            if not n.endswith(".rels") or not self.exists(n):
+                continue
+            if n == "_rels/.rels":
+                src = None
+            else:
+                d, b = posixpath.split(n)
+                src = posixpath.join(posixpath.dirname(d), b[:-5])
+            for r in self.rels(src):
+                out.append((src, r))
         return out
 
     def rel_by_type(self, part, suffix):

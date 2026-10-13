@@ -20,12 +20,12 @@ unsafe entry names, DOCTYPE). Risk findings do not change the exit code; read "r
 import argparse
 import re
 import sys
-from urllib.parse import urlsplit
 
 import pptpkg as pk
+import pptlinks as lk
 from pptpkg import NS, q
 
-SAFE_LINK_SCHEMES = {"http", "https", "mailto"}
+SAFE_LINK_SCHEMES = lk.SAFE_SCHEMES
 ACTION_RISK = {
     "ppaction://program": "runs a program when clicked",
     "ppaction://macro": "runs a VBA macro when clicked",
@@ -34,20 +34,10 @@ ACTION_RISK = {
 
 
 def link_info(target, show):
-    t = target.strip()
-    if t.startswith("\\\\"):
-        scheme, host = "unc", t[2:].split("\\", 1)[0]
-    else:
-        try:
-            sp = urlsplit(t)
-            scheme, host = (sp.scheme or "relative").lower(), sp.hostname or ""
-        except ValueError:
-            scheme, host = "invalid", ""
-        if len(scheme) == 1:  # C:\path
-            scheme, host = "file", ""
-    d = {"scheme": scheme, "host": pk.clean_text(host, 200)}
+    scheme, host, risky = lk.classify(target)
+    d = {"scheme": scheme, "host": pk.clean_text(host, 200), "risky_scheme": risky}
     if show:
-        d["target"] = pk.clean_text(t, 1000)
+        d["target"] = pk.clean_text(target.strip(), 1000)
     return d
 
 
@@ -69,6 +59,87 @@ def find_ph(root, ptype, idx):
         if t == ptype or (ptype in ("ctrTitle",) and t == "title") or (ptype == "subTitle" and t == "body"):
             return ph
     return None
+
+
+CHECKED = ["vba and macro-enabled content type", "activex", "custom ribbon ui", "ole objects",
+           "click and hover actions in every xml part", "link schemes and mismatched link text",
+           "external targets in every .rels file", "hidden slides", "slide parts not in the slide list",
+           "speaker notes", "comments and comment authors", "hidden and off-slide shapes",
+           "embedded files incl. chart workbooks", "document properties (core, app, custom), thumbnail, tags"]
+NOT_CHECKED = ["visible slide text and numbers", "text inside pictures, picture content, cropped-away areas",
+               "alt text and shape names", "text on masters and layouts", "section names",
+               "embedded fonts", "media file content", "created and modified dates (kept)",
+               "contents of embedded workbooks and OLE payloads"]
+
+
+def xml_part_names(pkg):
+    return [n for n in pkg.names if pkg.exists(n) and n.endswith(".xml") and "/_rels/" not in n
+            and n != "[Content_Types].xml" and not n.startswith("docProps/")]
+
+
+def part_label(pkg, part):
+    if not part:
+        return "package"
+    for prefix, label in (("ppt/slides/", "slide"), ("ppt/slideLayouts/", "layout"),
+                          ("ppt/slideMasters/", "master"), ("ppt/notesSlides/", "notes"),
+                          ("ppt/notesMasters/", "notes master"), ("ppt/handoutMasters/", "handout master"),
+                          ("ppt/theme/", "theme"), ("ppt/diagrams/", "smartart"), ("ppt/charts/", "chart"),
+                          ("ppt/embeddings/", "embedding")):
+        if part.startswith(prefix):
+            return "%s %s" % (label, part.rsplit("/", 1)[-1])
+    return part
+
+
+def _link_text(h):
+    """Visible text a link sits on: the run (merged with neighbours using the same r:id) or the shape."""
+    par = h.getparent()
+    rid = h.get(q("r", "id"))
+    if par is not None and par.tag == q("a", "rPr"):
+        run = par.getparent()
+        p = run.getparent() if run is not None else None
+        if p is None:
+            return ""
+        bits, cur = [], []
+        for r in p.findall("a:r", NS):
+            hl = r.find("a:rPr/a:hlinkClick", NS)
+            if hl is not None and hl.get(q("r", "id")) == rid:
+                cur.append(r)
+            else:
+                if run in cur:
+                    break
+                cur = []
+        return "".join((r.findtext("a:t", default="", namespaces=NS)) for r in cur)
+    shape = pk.top_shape(h)
+    return pk.text_of(shape) if shape is not None else ""
+
+
+def scan_links(pkg, part, show_targets):
+    root = pkg.xml(part)
+    if root is None:
+        return []
+    rmap = {r["id"]: r for r in pkg.rels(part)}
+    out = []
+    for tag in ("hlinkClick", "hlinkHover", "hlinkMouseOver"):
+        for h in root.iter(q("a", tag)):
+            action = h.get("action", "")
+            rel = rmap.get(h.get(q("r", "id")))
+            a = {"part": part, "where": part_label(pkg, part), "on": tag, "action": action or None}
+            base = action.split("?", 1)[0]
+            raw_text = _link_text(h)
+            if rel is not None and rel["external"]:
+                a.update(link_info(rel["target"], show_targets))
+                why = lk.mismatch(raw_text, rel["target"])
+                if why:
+                    a["mismatch"] = why
+                    a["text"] = pk.clean_text(raw_text, 120)
+            elif rel is not None:
+                a["internal"] = rel["type"].rsplit("/", 1)[-1]
+            if base in ACTION_RISK:
+                a["risk"] = ACTION_RISK[base]
+            elif a.get("risky_scheme"):
+                a["risk"] = "link scheme %s" % a["scheme"]
+            out.append(a)
+    return out
 
 
 def unlisted_slides(pkg, listed):
@@ -94,12 +165,8 @@ def analyze(pkg, text_limit=2000, show_targets=False, want_text=True):
     external = []
 
     def add_ext(part, rel, where):
-        if not rel["external"]:
-            return
-        kind = rel["type"].rsplit("/", 1)[-1]
-        info = {"part": part, "rel": rel["id"], "type": kind, "where": where}
-        info.update(link_info(rel["target"], show_targets))
-        external.append(info)
+        """Kept for readability at call sites; the package-wide walk below collects them."""
+        return None
 
     # Masters and layouts
     masters = []
@@ -232,24 +299,8 @@ def analyze(pkg, text_limit=2000, show_targets=False, want_text=True):
         if ole:
             info["ole"] = ole
             totals["ole"] += len(ole)
-        # Actions and hyperlinks
-        acts = []
-        for tag in ("hlinkClick", "hlinkHover", "hlinkMouseOver"):
-            for h in root.iter(q("a", tag)):
-                action = h.get("action", "")
-                rid = h.get(q("r", "id"))
-                a = {"on": tag, "action": action or None}
-                rel = rmap.get(rid) if rid else None
-                if rel is not None and rel["external"]:
-                    a.update(link_info(rel["target"], show_targets))
-                elif rel is not None:
-                    a["internal"] = rel["type"].rsplit("/", 1)[-1]
-                base = action.split("?", 1)[0]
-                if base in ACTION_RISK:
-                    a["risk"] = ACTION_RISK[base]
-                elif a.get("scheme") and a["scheme"] not in SAFE_LINK_SCHEMES:
-                    a["risk"] = "link scheme %s" % a["scheme"]
-                acts.append(a)
+        acts = [dict((k, v) for k, v in l.items() if k not in ("part", "where"))
+                for l in scan_links(pkg, part, show_targets)]
         if acts:
             info["actions"] = acts
             totals["actions"] += len(acts)
@@ -282,25 +333,33 @@ def analyze(pkg, text_limit=2000, show_targets=False, want_text=True):
     if stale:
         res["stale_section_ids"] = stale
 
-    # Package-level parts
+    # Package-level parts. Macros are found by relationship type and main content type, not
+    # by file name: a vbaProject relationship can point at any part name.
     names = [n for n in pkg.names if n not in pkg.removed]
-    vba = [n for n in names if n.lower().endswith("vbaproject.bin")]
-    activex = [n for n in names if n.lower().startswith("ppt/activex/")]
-    custom_ui = [r["part"] for r in pkg.rels(None) if "ui/extensibility" in r["type"] or "customUI" in r["type"]]
+    all_rels = pkg.all_rels()
+    vba = sorted({r["part"] for _, r in all_rels if r["type"].endswith("/vbaProject") and r["part"]}
+                 | {n for n in names if n.lower().endswith("vbaproject.bin")})
+    activex = sorted({r["part"] for _, r in all_rels if r["type"].endswith(("/control", "/activeXControlBinary"))
+                      and r["part"]} | {n for n in names if n.lower().startswith("ppt/activex/")})
+    custom_ui = [r["part"] or r["target"] for _, r in all_rels if "ui/extensibility" in r["type"] or "customUI" in r["type"]]
     embeddings = [n for n in names if n.lower().startswith("ppt/embeddings/")]
     res["parts"] = {"vba": vba, "activex": activex, "custom_ui": custom_ui, "embeddings": embeddings,
                     "media_files": [n for n in names if n.lower().startswith("ppt/media/")],
                     "tags": [n for n in names if n.lower().startswith("ppt/tags/")],
                     "comment_authors": [n for n in names if n.lower() in ("ppt/commentauthors.xml", "ppt/authors.xml")]}
-    for part in (pkg.main,):
-        for r in pkg.rels(part):
-            add_ext(part, r, "presentation")
-    for m in masters:
-        for r in pkg.rels(m["part"]):
-            add_ext(m["part"], r, "master")
-        for lay in m["layouts"]:
-            for r in pkg.rels(lay["part"]):
-                add_ext(lay["part"], r, "layout")
+    # External targets from every .rels file in the package (themes, SmartArt, presProps,
+    # handout masters, embedded parts included), not only slides.
+    for src, r in all_rels:
+        if r["external"]:
+            info = {"part": src or "(package)", "rel": r["id"], "type": r["type"].rsplit("/", 1)[-1],
+                    "where": part_label(pkg, src)}
+            info.update(link_info(r["target"], show_targets))
+            external.append(info)
+    # Click and hover actions and hyperlinks in every XML part.
+    links = []
+    for n in xml_part_names(pkg):
+        links.extend(scan_links(pkg, n, show_targets))
+    res["links"] = links
 
     # Metadata
     meta = {}
@@ -312,7 +371,7 @@ def analyze(pkg, text_limit=2000, show_targets=False, want_text=True):
     app = pkg.xml("docProps/app.xml") if pkg.exists("docProps/app.xml") else None
     if app is not None:
         for el in app:
-            if isinstance(el.tag, str) and el.tag.split("}")[1] in ("Company", "Manager", "HyperlinkBase") \
+            if isinstance(el.tag, str) and el.tag.split("}")[1] in pk.APP_STRIP \
                     and (el.text or "").strip():
                 meta[el.tag.split("}")[1]] = pk.clean_text(el.text, 200)
             elif isinstance(el.tag, str) and el.tag.split("}")[1] == "TitlesOfParts":
@@ -329,16 +388,20 @@ def analyze(pkg, text_limit=2000, show_targets=False, want_text=True):
     # Risk list (what a share-check must clear)
     if vba:
         risks.append({"risk": "vba-macros", "detail": vba})
+    if pkg.kind in ("pptm", "ppsm", "potm"):
+        risks.append({"risk": "macro-enabled-type", "detail": pkg.kind})
     if activex:
         risks.append({"risk": "activex-controls", "count": len(activex)})
     if custom_ui:
         risks.append({"risk": "custom-ribbon-ui", "detail": custom_ui})
     if totals["ole"]:
         risks.append({"risk": "ole-objects", "count": totals["ole"]})
-    for s in slides:
-        for a in s.get("actions", []):
-            if "risk" in a:
-                risks.append({"risk": "action", "slide": s["index"], "detail": a["risk"]})
+    for l in links:
+        if "risk" in l:
+            risks.append({"risk": "action", "part": l["part"], "where": l["where"], "detail": l["risk"]})
+        if l.get("mismatch"):
+            risks.append({"risk": "mismatched-link", "part": l["part"], "where": l["where"],
+                          "detail": l["mismatch"], "text": l.get("text", "")})
     for e in external:
         if e["type"] != "hyperlink":
             risks.append({"risk": "external-link", "detail": "%s %s from %s" % (e["type"], e["scheme"], e["where"])})
@@ -354,8 +417,8 @@ def analyze(pkg, text_limit=2000, show_targets=False, want_text=True):
         risks.append({"risk": "hidden-shapes", "count": totals["hidden_shapes"]})
     if totals["offslide_shapes"]:
         risks.append({"risk": "offslide-shapes", "count": totals["offslide_shapes"]})
-    personal = [k for k in ("creator", "lastModifiedBy", "Company", "Manager", "custom_properties",
-                            "thumbnail", "HyperlinkBase", "TitlesOfParts") if k in meta]
+    personal = [k for k in meta if k in pk.CORE_STRIP or k in pk.APP_STRIP
+                or k in ("custom_properties", "thumbnail", "TitlesOfParts")]
     if personal:
         risks.append({"risk": "metadata", "detail": personal})
     if res["parts"]["comment_authors"]:
@@ -367,6 +430,7 @@ def analyze(pkg, text_limit=2000, show_targets=False, want_text=True):
     elif embeddings:
         risks.append({"risk": "embedded-files", "count": len(embeddings)})
     res["risks"] = risks
+    res["clean_scope"] = {"checked": CHECKED, "not_checked": NOT_CHECKED}
     return res
 
 

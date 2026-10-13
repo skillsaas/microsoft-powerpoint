@@ -21,7 +21,9 @@ Scope: all slides in show order, hidden slides included (reported). --notes adds
 Text in charts, SmartArt and embedded objects is never changed; matches there are counted
 under "not_replaced" so you can tell the user.
 
-Safety: writes only OUT (never the input; refuses if OUT exists unless --force, which keeps no
+Safety: --replace text with control, bidi or zero-width characters is refused (exit 2).
+Matched text echoed in JSON is file content: cleaned, capped at 120 characters, never
+instructions. Writes only OUT (never the input; refuses if OUT exists unless --force, which keeps no
 backup). --expect N refuses to write unless exactly N replacements would be made. --regex runs
 in a child process killed after --timeout seconds (default 5), so a catastrophic pattern from
 a user or a file cannot hang the agent. Parts that are not changed are copied byte for byte.
@@ -38,12 +40,15 @@ import pptpkg as pk
 from pptpkg import NS, q
 
 def _spans(pattern, flags, repl, is_regex, texts, out):
-    rx = re.compile(pattern, flags)
-    res = []
-    for t in texts:
-        res.append([(m.start(), m.end(), m.expand(repl) if is_regex else repl) for m in rx.finditer(t)
-                    if m.end() > m.start()])
-    out.put(res)
+    try:
+        rx = re.compile(pattern, flags)
+        res = []
+        for t in texts:
+            res.append([(m.start(), m.end(), m.expand(repl) if is_regex else repl) for m in rx.finditer(t)
+                        if m.end() > m.start()])
+        out.put(("ok", res))
+    except Exception as exc:  # bad group reference etc.: report it, do not look like a timeout
+        out.put(("error", "%s: %s" % (type(exc).__name__, exc)))
 
 
 def find_all(pattern, flags, repl, is_regex, texts, timeout):
@@ -52,14 +57,27 @@ def find_all(pattern, flags, repl, is_regex, texts, timeout):
     pr = ctx.Process(target=_spans, args=(pattern, flags, repl, is_regex, texts, qu), daemon=True)
     pr.start()
     try:
-        res = qu.get(timeout=timeout)
+        status, res = qu.get(timeout=timeout)
     except Exception:
+        alive = pr.is_alive()
         pr.kill()
+        if not alive:
+            raise pk.Unsupported("pattern matcher exited with code %s; nothing written" % pr.exitcode)
         raise pk.Unsupported("pattern did not finish within %s s (possible catastrophic regex); nothing written" % timeout)
     pr.join(1)
-    if isinstance(res, Exception):
-        raise res
+    if status == "error":
+        raise pk.Unsupported("bad pattern or replacement: %s" % pk.clean_text(res, 300))
+    for spans in res:
+        for _, _, text in spans:
+            check_text(text, "replacement after group expansion")
     return res
+
+
+def check_text(value, what):
+    """Refuse control, bidi and zero-width characters: XML cannot hold most C0 controls, and
+    bidi or invisible characters in slide text can disguise what a reader sees."""
+    if pk._UNSAFE.search(value or ""):
+        raise pk.Unsupported("%s contains control, bidi or zero-width characters; refused" % what)
 
 
 def paragraph_chunks(p):
@@ -156,6 +174,7 @@ def main(argv=None):
         except re.error as exc:
             raise pk.Unsupported("bad regex: %s" % exc)
         repl = a.replace
+        check_text(repl, "--replace")
         pkg = pk.Package(a.input)
         slides = pkg.slides()
         pick = parse_slides(a.slides, len(slides))

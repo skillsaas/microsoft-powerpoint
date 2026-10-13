@@ -30,8 +30,12 @@ LibreOffice 25.2.3.2 left them out of the PDF in our test. PNG export renders th
 pdftoppm (poppler) in the same sandbox, one file per slide (slide-01.png ...), because
 `soffice --convert-to png` writes only the first slide.
 
-Input caps before LibreOffice sees the file: 512 MB on disk; .pptx family packages also pass
-the package checks of pptpkg.py (entry count, uncompressed size, duplicate names, DOCTYPE).
+Input checks before LibreOffice sees the file, by content, not extension: 512 MB on disk;
+.pptx family packages pass the package checks of pptpkg.py (entry count, uncompressed size,
+duplicate names, DOCTYPE); .odp must be a zip with content.xml and passes the same zip caps;
+.ppt/.pps/.pot must be OLE2 and not encrypted. A zip renamed .ppt, or OLE2 renamed .odp, is
+refused. LibreOffice runs with an address-space cap (--memory-mb, default 4096) as well as
+the timeout. --to pptx output is LibreOffice-written and keeps external links: inspect it.
 
 Exit codes: 0 written, 1 LibreOffice or pdftoppm ran but produced no output, 2 setup problem
 or unsupported input (no soffice, no bwrap, output exists, wrong extension), 3 safety refusal
@@ -61,6 +65,43 @@ XCU = """<?xml version="1.0" encoding="UTF-8"?>
 <item oor:path="/org.openoffice.Office.Common/Misc"><prop oor:name="UseOpenCL" oor:op="fuse"><value>false</value></prop></item>
 </oor:items>
 """
+
+
+def check_input(src, ext):
+    """Caps and type checks by content, not extension, before LibreOffice sees the file."""
+    kind = pk.sniff(src)
+    if ext in PKG_EXT:
+        pk.Package(src)  # zip caps, duplicate names, DOCTYPE, encrypted, legacy
+        return
+    if kind == "ole2":
+        k = pk.ole2_kind(src)
+        if k == "encrypted":
+            raise pk.Unsupported("the file is password-protected")
+        if ext == ".odp":
+            raise pk.Unsupported("content is an OLE2 file, not OpenDocument; extension does not match")
+        return  # legacy .ppt/.pps/.pot: binary format, size cap above, sandbox does the rest
+    if kind == "zip":
+        import zipfile
+        with zipfile.ZipFile(src) as zf:
+            pk.check_zip(zf)  # same entry, size and name caps as the .pptx path
+            names = set(zf.namelist())
+        if ext != ".odp":
+            raise pk.Unsupported("content is a zip package, not a legacy binary %s; rename it .pptx or .odp" % ext)
+        if "content.xml" not in names:
+            raise pk.Unsupported("zip without content.xml is not an OpenDocument presentation")
+        return
+    raise pk.Unsupported("content does not match the %s extension" % ext)
+
+
+def limit_memory(mb):
+    """Address-space cap for LibreOffice (inherited through bwrap). Linux only."""
+    def apply():
+        try:
+            import resource
+            resource.setrlimit(resource.RLIMIT_AS, (mb * 1024 * 1024, mb * 1024 * 1024))
+        except (ImportError, ValueError, OSError):
+            pass
+    return apply
 
 
 def find_soffice():
@@ -131,9 +172,13 @@ def check():
             "error": None if ok and soffice else (why or "LibreOffice (soffice) not found")}
 
 
+MEMORY_MB = 4096
+
+
 def run_boxed(cmd, work, timeout):
     p = subprocess.Popen(bwrap_cmd(work) + cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                         start_new_session=True, env={"PATH": "/usr/bin:/bin"})
+                         start_new_session=True, env={"PATH": "/usr/bin:/bin"},
+                         preexec_fn=limit_memory(MEMORY_MB))
     try:
         out, err = p.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -153,8 +198,11 @@ def main(argv=None):
     ap.add_argument("--dpi", type=int, default=110)
     ap.add_argument("--timeout", type=float, default=180)
     ap.add_argument("--force", action="store_true", help="replace an existing OUT file (no backup)")
+    ap.add_argument("--memory-mb", type=int, default=4096, help="address-space cap for LibreOffice")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
+    global MEMORY_MB
+    MEMORY_MB = max(512, a.memory_mb)
     if a.check:
         res = check()
         pk.emit(res, a.json, lambda r: print(json.dumps(r, indent=2)))
@@ -169,10 +217,7 @@ def main(argv=None):
             raise pk.Unsupported("unsupported input extension %s" % ext)
         if os.path.getsize(src) > MAX_INPUT:
             raise pk.Refused("input larger than %d bytes" % MAX_INPUT)
-        if ext in PKG_EXT:
-            pk.Package(src)  # caps, duplicate names, DOCTYPE, encrypted
-        elif pk.sniff(src) == "ole2" and pk.ole2_kind(src) == "encrypted":
-            raise pk.Unsupported("the file is password-protected")
+        check_input(src, ext)
         want = {"pdf": ".pdf", "pptx": ".pptx"}.get(a.to)
         if want and os.path.splitext(out)[1].lower() != want:
             raise pk.Unsupported("OUT must end in %s for --to %s" % (want, a.to))
@@ -255,6 +300,9 @@ def main(argv=None):
         res = {"ok": True, "input": a.input, "output": a.output, "to": a.to, "files": files,
                "engine": "LibreOffice (sandboxed bwrap, no network)", "error": None,
                "note": "Rendered by LibreOffice, not PowerPoint; layout and fonts may differ."}
+        if a.to == "pptx":
+            res["note"] = ("Converted by LibreOffice: the whole deck was re-saved and keeps any external "
+                           "links, notes and metadata. Run inspect_pptx.py and pptx_sanitize.py --check-clean on it.")
         pk.emit(res, a.json, lambda r: print("wrote %d file(s): %s" % (len(r["files"]), ", ".join(r["files"][:5]))))
         return 0
     except (pk.Unsupported, pk.Refused) as exc:

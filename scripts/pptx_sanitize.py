@@ -53,8 +53,8 @@ CLEARS = {
     "notes": {"speaker-notes"},
     "comments": {"comments", "comment-authors"},
     "hidden_slides": {"hidden-slides", "unlisted-slides"},
-    "macros": {"vba-macros", "custom-ribbon-ui"},
-    "active": {"ole-objects", "activex-controls", "action", "external-link"},
+    "macros": {"vba-macros", "custom-ribbon-ui", "macro-enabled-type"},
+    "active": {"ole-objects", "activex-controls", "action", "external-link", "mismatched-link"},
     "chart_workbooks": {"embedded-files"},
     "hidden_shapes": {"hidden-shapes", "offslide-shapes"},
     "metadata": {"metadata", "tags"},
@@ -117,19 +117,21 @@ def do_comments(pkg, log):
             log.append("comment authors")
 
 
-def do_hidden_slides(pkg, log):
+def remove_slides(pkg, gone, log, extra_parts=(), label="slide"):
+    """Remove slides completely: sldId, presentation relationship, section and custom show
+    entries (and stale section ids), links from any other part that jump to them, and the
+    parts themselves (notes, charts and media go with the garbage collection that follows).
+
+    gone: slide dicts from pkg.slides(); extra_parts: slide parts not in the slide list.
+    """
     pres = pkg.xml(pkg.main)
     listed = pkg.slides()
-    gone = [s for s in listed if s["hidden"]]
-    unlisted = set(ins.unlisted_slides(pkg, {s["part"] for s in listed}))
-    if not gone and not unlisted:
-        return
     ids = {s["id"] for s in gone}
     rids = {s["rid"] for s in gone}
-    parts = {s["part"] for s in gone} | unlisted
+    parts = {s["part"] for s in gone} | set(extra_parts)
     known = {s["id"] for s in listed} - ids
     lst = pres.find("p:sldIdLst", NS)
-    for sid in list(lst):
+    for sid in list(lst if lst is not None else []):
         if sid.get("id") in ids:
             lst.remove(sid)
     for el in list(pres.iter(q("p14", "sldId"))):
@@ -140,38 +142,45 @@ def do_hidden_slides(pkg, log):
             el.getparent().remove(el)
     pkg.set_xml(pkg.main, pres)
     for r in pkg.rels(pkg.main):
-        if r["part"] in unlisted:
+        if r["part"] in parts:
             rids.add(r["id"])
     for rid in rids:
         pkg.drop_rel(pkg.main, rid)
-    # Links on remaining slides that jump to a removed slide
-    for s in pkg.slides():
-        if not s["part"]:
+    # Links in any remaining part (slides, notes, layouts, masters) that jump to a removed slide
+    for part in ins.xml_part_names(pkg):
+        if part in parts:
             continue
-        root = pkg.xml(s["part"])
-        changed = False
-        for r in pkg.rels(s["part"]):
-            if r["type"].endswith("/slide") and r["part"] in parts:
-                for el in pk.r_attr_users(root, r["id"]):
-                    el.getparent().remove(el)
-                    changed = True
-                pkg.drop_rel(s["part"], r["id"])
-                log.append("link to removed slide on slide %d" % s["index"])
-        if changed:
-            pkg.set_xml(s["part"], root)
-    log.extend("hidden slide %s" % s["index"] for s in gone)
-    log.extend("unlisted slide part %s" % n for n in sorted(unlisted))
-    for n in unlisted:  # nothing else may point at it now; drop it even if some other part does
+        hits = [r for r in pkg.rels(part) if r["type"].endswith("/slide") and r["part"] in parts]
+        if not hits:
+            continue
+        root = pkg.xml(part)
+        for r in hits:
+            for el in pk.r_attr_users(root, r["id"]):
+                el.getparent().remove(el)
+            pkg.drop_rel(part, r["id"])
+            log.append("link to removed slide in %s" % part)
+        pkg.set_xml(part, root)
+    log.extend("%s %s" % (label, s["index"]) for s in gone)
+    log.extend("unlisted slide part %s" % n for n in sorted(extra_parts))
+    for n in parts:  # drop the parts even if something unexpected still points at them
         pkg.remove(n)
 
 
+def do_hidden_slides(pkg, log):
+    listed = pkg.slides()
+    gone = [s for s in listed if s["hidden"]]
+    unlisted = set(ins.unlisted_slides(pkg, {s["part"] for s in listed}))
+    if gone or unlisted:
+        remove_slides(pkg, gone, log, unlisted, label="hidden slide")
+
+
 def do_macros(pkg, log):
-    for part in (pkg.main, None):
-        for r in pkg.rels(part):
-            t = r["type"]
-            if t.endswith("/vbaProject") or "ui/extensibility" in t or "customUI" in t:
-                pkg.drop_rel(part, r["id"])
-                log.append("macro or ribbon part %s" % (r["part"] or r["target"]))
+    for part, r in pkg.all_rels():  # by relationship type, whatever the part is called
+        t = r["type"]
+        if t.endswith(("/vbaProject", "/vbaProjectSignature", "/vbaProjectSignatureAgile",
+                       "/vbaProjectSignatureV3")) or "ui/extensibility" in t or "customUI" in t:
+            pkg.drop_rel(part, r["id"])
+            log.append("macro or ribbon part %s" % (r["part"] or r["target"]))
     main_ct = pkg.content_type(pkg.main)
     if main_ct in pk.MACRO_FREE:
         for o in pkg.ct.findall("ct:Override", NS):
@@ -184,7 +193,7 @@ def do_macros(pkg, log):
 
 
 def do_active(pkg, log):
-    for part in xml_parts(pkg):
+    for part in ins.xml_part_names(pkg):
         root = pkg.xml(part)
         rmap = {r["id"]: r for r in pkg.rels(part)}
         touched = []
@@ -194,8 +203,8 @@ def do_active(pkg, log):
                 rel = rmap.get(h.get(q("r", "id")))
                 risky = action in ins.ACTION_RISK
                 if rel is not None and rel["external"]:
-                    if ins.link_info(rel["target"], False)["scheme"] not in ins.SAFE_LINK_SCHEMES:
-                        risky = True
+                    if ins.lk.classify(rel["target"])[2] or ins.lk.mismatch(ins._link_text(h), rel["target"]):
+                        risky = True  # unsafe scheme, or text that shows a different site
                 if risky:
                     h.getparent().remove(h)
                     if rel is not None:
@@ -220,17 +229,22 @@ def do_active(pkg, log):
         for r in pkg.rels(part):  # ActiveX / OLE rels left without users
             if r["type"].endswith(("/control", "/oleObject", "/package")) and not pk.r_attr_users(root, r["id"]):
                 pkg.drop_rel(part, r["id"])
-    # external chart data
-    for n in [n for n in pkg.names if pkg.exists(n) and n.startswith("ppt/charts/") and n.endswith(".xml")
-              and "/_rels/" not in n]:
-        for r in pkg.rels(n):
-            if r["external"]:
-                root = pkg.xml(n)
-                for el in pk.r_attr_users(root, r["id"]):
+    # External targets left in any .rels file (chart data, theme pictures, SmartArt, presProps,
+    # package level): remove what uses them, or the reference, then the relationship.
+    for src, r in pkg.all_rels():
+        if not r["external"] or r["type"].endswith("/hyperlink"):
+            continue
+        root = pkg.xml(src) if src and src.endswith(".xml") and pkg.exists(src) else None
+        if root is not None:
+            for el in pk.r_attr_users(root, r["id"]):
+                if src.startswith("ppt/charts/") and el.tag == q("c", "externalData"):
                     el.getparent().remove(el)
-                pkg.set_xml(n, root)
-                pkg.drop_rel(n, r["id"])
-                log.append("external chart data link in %s" % n)
+                elif not remove_shape(el, log, "shape using external %s in %s" % (r["type"].rsplit("/", 1)[-1], src)):
+                    for k in [k for k, v in el.attrib.items() if v == r["id"]]:
+                        del el.attrib[k]
+            pkg.set_xml(src, root)
+        pkg.drop_rel(src, r["id"])
+        log.append("external %s link in %s" % (r["type"].rsplit("/", 1)[-1], src or "package"))
 
 
 def do_chart_workbooks(pkg, log):
@@ -263,9 +277,7 @@ def do_metadata(pkg, log):
     if pkg.exists("docProps/core.xml"):
         core = pkg.xml("docProps/core.xml")
         for el in list(core):
-            if isinstance(el.tag, str) and el.tag.split("}")[1] in (
-                    "creator", "lastModifiedBy", "lastPrinted", "keywords", "description", "subject",
-                    "category", "contentStatus", "identifier"):
+            if isinstance(el.tag, str) and el.tag.split("}")[1] in pk.CORE_STRIP:
                 if (el.text or "").strip():
                     log.append("core property %s" % el.tag.split("}")[1])
                 core.remove(el)
@@ -273,8 +285,7 @@ def do_metadata(pkg, log):
     if pkg.exists("docProps/app.xml"):
         app = pkg.xml("docProps/app.xml")
         for el in list(app):
-            if isinstance(el.tag, str) and el.tag.split("}")[1] in ("Company", "Manager", "HyperlinkBase",
-                                                                    "HeadingPairs", "TitlesOfParts"):
+            if isinstance(el.tag, str) and el.tag.split("}")[1] in pk.APP_STRIP:
                 if (el.text or "").strip() or len(el):
                     log.append("app property %s" % el.tag.split("}")[1])
                 app.remove(el)
@@ -335,7 +346,10 @@ def main(argv=None):
         if a.check_clean:
             left, res = check(a.input, CATS)
             out = {"ok": not left, "file": a.input, "kind": res["kind"], "residue": left,
-                   "error": None if not left else "deck is not ready to share"}
+                   "clean_scope": res["clean_scope"],
+                   "error": None if not left else "deck is not ready to share",
+                   "note": "ok means these checks passed, not that the deck is safe to share: "
+                           "review clean_scope.not_checked with the user."}
             pk.emit(out, a.json, lambda r: print("clean" if r["ok"] else
                                                  "NOT clean:\n" + "\n".join("  - %s" % x for x in r["residue"])))
             return 0 if not left else 1
@@ -366,7 +380,7 @@ def main(argv=None):
         pkg.save(a.output, force=a.force)
         left, res = check(a.output, cats)
         out = {"ok": not left, "input": a.input, "output": a.output, "kind": res["kind"],
-               "removed": log, "remaining": left,
+               "removed": log, "remaining": left, "clean_scope": res["clean_scope"],
                "error": None if not left else "risks remain after sanitizing",
                "note": "Not redaction: visible slide text, pictures, masters and media were kept."}
         pk.emit(out, a.json, lambda r: print("removed %d item(s); %s" % (
