@@ -350,8 +350,8 @@ def main(argv=None):
                    "error": None if not left else "deck is not ready to share",
                    "note": "ok means these checks passed, not that the deck is safe to share: "
                            "review clean_scope.not_checked with the user."}
-            pk.emit(out, a.json, lambda r: print("clean" if r["ok"] else
-                                                 "NOT clean:\n" + "\n".join("  - %s" % x for x in r["residue"])))
+            pk.emit(out, a.json, lambda r: print("checks passed (not checked: %s)" % ", ".join(r["clean_scope"]["not_checked"]) if r["ok"] else
+                                                 "checks failed, still present:\n" + "\n".join("  - %s" % x for x in r["residue"])))
             return 0 if not left else 1
         if not a.output:
             raise pk.Unsupported("give OUT, or use --check-clean")
@@ -384,7 +384,7 @@ def main(argv=None):
                "error": None if not left else "risks remain after sanitizing",
                "note": "Not redaction: visible slide text, pictures, masters and media were kept."}
         pk.emit(out, a.json, lambda r: print("removed %d item(s); %s" % (
-            len(r["removed"]), "clean" if r["ok"] else "REMAINING: %s" % r["remaining"])))
+            len(r["removed"]), "requested checks pass; not a safety verdict" if r["ok"] else "REMAINING: %s" % r["remaining"])))
         return 0 if not left else 1
     except (pk.Unsupported, pk.Refused) as exc:
         return pk.fail(exc, a.json)

@@ -1,6 +1,6 @@
 # Recipes and worked examples
 
-All four examples were run on 2026-10-13 against `tests/fixtures/deck.pptx` (4 slides, slide 2
+All six examples were run on 2026-10-13 against `tests/fixtures/deck.pptx` (4 slides, slide 2
 hidden, notes, a comment, a chart) and a "received" copy of it with a macro, an OLE object,
 click actions and linked pictures added (built by `threat_deck()` in `tests/smoke_test.py`).
 Output is real; long lists are cut where marked.
@@ -18,10 +18,11 @@ received.pptm  (pptm, 4 slides)
 sections: Intro (2), Data (2)
 risks:
   - risk=vba-macros, detail=['ppt/vbaProject.bin']
+  - risk=macro-enabled-type, detail=pptm
   - risk=ole-objects, count=1
-  - risk=action, slide=4, detail=runs a program when clicked
-  - risk=action, slide=4, detail=link scheme javascript
-  - risk=action, slide=4, detail=link scheme unc
+  - risk=action, part=ppt/slides/slide4.xml, where=slide 4, detail=runs a program when clicked
+  - risk=action, part=ppt/slides/slide4.xml, where=slide 4, detail=link scheme javascript
+  - risk=action, part=ppt/slides/slide4.xml, where=slide 4, detail=link scheme unc
   - risk=external-link, detail=image http from slide 4
   - risk=external-link, detail=image file from slide 4
   - risk=hidden-slides, count=1
@@ -49,10 +50,18 @@ Exit 1. Ask: "Remove the hidden slide, 2 slides of notes, 1 comment, author and 
 and the workbook behind the chart?" After a yes:
 ```bash
 python <skill-dir>/scripts/pptx_sanitize.py received.pptm received.pptx --all
-# removed 33 item(s); clean            (exit 0)
+# removed 36 item(s); requested checks pass; not a safety verdict      (exit 0)
 python <skill-dir>/scripts/pptx_sanitize.py received.pptx --check-clean --json
-# {"ok": true, "file": "received.pptx", "kind": "pptx", "residue": [], "error": null}
 ```
+```json
+{"ok": true, "file": "received.pptx", "kind": "pptx", "residue": [],
+ "clean_scope": {"checked": ["vba and macro-enabled content type", "activex", "custom ribbon ui", "..."],
+                 "not_checked": ["visible slide text and numbers", "text inside pictures, picture content, cropped-away areas",
+                                 "alt text and shape names", "..."]},
+ "error": null,
+ "note": "ok means these checks passed, not that the deck is safe to share: review clean_scope.not_checked with the user."}
+```
+Tell the user what was checked and read out `not_checked`; do not call the deck "safe".
 Note the output extension: a macro deck becomes `.pptx`. Then render and read the PDF.
 
 ## Example 3: rename a term that is split across runs
@@ -88,6 +97,51 @@ python <skill-dir>/scripts/pptx_render.py deck.edited.pptx deck-png --to png --j
 ```
 Three images for four slides: the hidden slide is not rendered, so `slide-2.png` is deck slide 3.
 
+## Example 5: delete and reorder slides
+```bash
+python <skill-dir>/scripts/pptx_slides.py deck.pptx deck.edited.pptx --delete 2 --move 3:1 --expect-slides 3 --json
+```
+```json
+{"ok": true, "input": "deck.pptx", "output": "deck.edited.pptx", "slides_before": 4, "slides_after": 3,
+ "changes": ["link to removed slide in ppt/slides/slide1.xml",
+             "link to removed slide in ppt/notesSlides/notesSlide2.xml", "deleted slide 2",
+             "unreferenced part ppt/notesSlides/notesSlide2.xml", "unreferenced part ppt/slides/slide2.xml",
+             "moved slide 3 to position 1"],
+ "problems": [], "error": null}
+```
+`--move` counts after the delete: slide 3 of the 3-slide result is the old slide 4. Slide 1 had
+a link to slide 2, so the link was removed (the text stays); tell the user.
+
+## Example 6: new deck from the user's template
+```bash
+python <skill-dir>/scripts/pptx_build.py --list-layouts brand.potx
+```
+```
+ 0  Title Slide                  idx 0 CENTER_TITLE, idx 1 SUBTITLE, idx 10 DATE, idx 11 FOOTER, idx 12 SLIDE_NUMBER
+ 1  Title and Content            idx 0 TITLE, idx 1 OBJECT, idx 10 DATE, idx 11 FOOTER, idx 12 SLIDE_NUMBER
+ 8  Picture with Caption         idx 0 TITLE, idx 1 PICTURE, idx 2 BODY, idx 10 DATE, idx 11 FOOTER, idx 12 SLIDE_NUMBER
+ ... (cut)
+```
+`spec.json`:
+```json
+{"slides": [
+  {"layout": "Title Slide", "fill": {"0": "Quarterly review", "1": "October 2026"}},
+  {"layout": 1, "fill": {"0": "Results", "1": ["Revenue up 12%", {"text": "EMEA led", "level": 1}]},
+   "notes": "Mention July."},
+  {"layout": "Picture with Caption", "fill": {"0": "Site", "1": {"image": "site.png"}, "2": "Caption"}, "hidden": true}]}
+```
+```bash
+python <skill-dir>/scripts/pptx_build.py brand.potx spec.json review.pptx
+# wrote review.pptx (3 slides)
+python <skill-dir>/scripts/inspect_pptx.py review.pptx
+#    1. Quarterly review [Title Slide]
+#    2. Results [Title and Content] notes
+#    3. Site [Picture with Caption] HIDDEN
+```
+The template's own slides and sections were removed. Date, footer and slide-number
+placeholders are not copied onto new slides by python-pptx; turn them on in PowerPoint
+(Insert > Header & Footer) if wanted. Render to check that text fits.
+
 ## JSON shapes
 `inspect_pptx.py --json` (keys): `ok, file, kind, main_part, slide_size_emu, masters[{part,
 layouts[{part,name,type}]}], slides[{index, id, part, hidden, layout, layout_name,
@@ -96,14 +150,23 @@ comments, charts[{part, embedded_workbook, external_data}], media[{rel, linked, 
 ole[], actions[{on, action, scheme, host, internal, risk}], transition, animations,
 hidden_shapes, offslide_shapes, tags}], sections[{name, slide_ids}], unlisted_slide_parts,
 stale_section_ids, parts{vba, activex, custom_ui, embeddings, media_files, tags,
-comment_authors}, metadata, external[{part, rel, type, where, scheme, host, target?}], totals, risks[]`.
+comment_authors}, metadata, external[{part, rel, type, where, scheme, host, risky_scheme, target?}],
+links[{part, where, on, action, scheme, host, risky_scheme, mismatch?, text?, risk?}], clean_scope,
+totals, risks[]`.
 
 `pptx_replace.py --json`: `ok, input, output, replaced, skipped_across_breaks_or_fields,
 not_replaced{charts, smartart}, matches[{where, hidden_slide, text, runs}] (first 200),
 hidden_slides_touched, error`.
 
-`pptx_sanitize.py --json`: write mode `ok, input, output, kind, removed[], remaining[], error,
-note`; `--check-clean` mode `ok, file, kind, residue[], error`; `--dry-run` `would_remove[]`.
+`pptx_sanitize.py --json`: write mode `ok, input, output, kind, removed[], remaining[],
+clean_scope{checked[], not_checked[]}, error, note`; `--check-clean` mode `ok, file, kind,
+residue[], clean_scope, error, note`; `--dry-run` `would_remove[]`.
+
+`pptx_slides.py --json`: `ok, input, output, slides_before, slides_after, changes[], problems[], error`.
+
+`pptx_build.py --json`: `ok, template, output, slides[{index, layout, filled[], empty[], hidden}],
+removed_template_slides, next, error`; with `--list-layouts`: `ok, template, slide_size_emu,
+template_slides, layouts[{index, master, name, placeholders[{idx, type, name}]}], error`.
 
 `pptx_render.py --json`: `ok, input, output, to, files[], engine, error, note`; `--check`
 `ok, platform, soffice, soffice_version, bwrap, bwrap_error, pdftoppm, can_render, can_png, error`.
@@ -111,13 +174,12 @@ note`; `--check-clean` mode `ok, file, kind, residue[], error`; `--dry-run` `wou
 ## Common tasks
 - **Summarize a deck**: `inspect_pptx.py --json`, use `title`, `text` and (if the user wants)
   `notes`; say which slides are hidden.
-- **Fill a template**: python-pptx, `prs.slides.add_slide(prs.slide_layouts[i])`, fill
-  placeholders by `idx` (list them with `inspect_pptx.py` on a sample), never by position.
+- **Fill a template**: `pptx_build.py --list-layouts`, then a spec (example 6). Placeholders
+  by `idx`, never text boxes at fixed positions.
 - **Rebrand**: text with `pptx_replace.py`; logo and colors usually live on the master and theme
   (`ppt/theme/theme1.xml`), so ask before editing them, then render every layout.
 - **Notes to a document**: `inspect_pptx.py --json` gives `notes` per slide; or
   `pptx_render.py --notes-pages` for a printable PDF.
-- **Delete slides**: hide them (python-pptx `show="0"`), then `pptx_sanitize.py --remove-hidden-slides`;
-  check first that no other slide was already hidden.
+- **Delete, hide or reorder slides**: `pptx_slides.py` (example 5), `--dry-run` first.
 - **Check before a talk**: hidden slides, linked media (`linked: true` breaks on another
   machine), fonts (render and compare), transitions with `advTm` (auto-advance).

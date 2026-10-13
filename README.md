@@ -7,7 +7,8 @@ before they are shared.
 ## Use it when
 - a user asks you to read, summarize, edit or rebrand a `.pptx`, `.pptm`, `.ppsx` or `.potx`;
 - find and replace misses words because PowerPoint split them across runs;
-- python-pptx cannot delete, reorder or hide a slide, or `text_frame.text` wiped formatting;
+- slides must be deleted, reordered or hidden (python-pptx has no API), or `text_frame.text` wiped formatting;
+- a new deck must be built from the user's template, filling layout placeholders;
 - you need slide images or a PDF (LibreOffice in a sandbox), or notes pages as a handout;
 - a chart's numbers must change and its embedded workbook must follow;
 - a deck came from outside (macros, OLE objects, linked pictures, click actions that run programs);
@@ -15,13 +16,15 @@ before they are shared.
 - you automate PowerPoint with VBA, an Office.js add-in or Microsoft Graph.
 
 ## Install
-Planned, not yet published (v0.1.0 is under review):
+Planned, not yet published (v0.1.1 is under review):
 ```bash
 npx @skillsaas/cli add microsoft-powerpoint      # planned
 npx skills add skillsaas/microsoft-powerpoint    # planned
 ```
 Today: copy this folder into your agent's skills folder (for example `.claude/skills/`
 or `.agents/skills/`) and run `pip install -r scripts/requirements.txt`.
+
+Try it: `python scripts/inspect_pptx.py tests/fixtures/deck.pptx`, then `python tests/smoke_test.py`.
 
 ## Contents
 | Path | What |
@@ -30,11 +33,14 @@ or `.agents/skills/`) and run `pip install -r scripts/requirements.txt`.
 | `references/` | PresentationML, python-pptx, charts and media, rendering, security, recipes, extraction, automation, fallbacks, troubleshooting |
 | `scripts/inspect_pptx.py` | Read-only inventory and risk list |
 | `scripts/pptx_replace.py` | Replace text split across runs, with `--expect` |
+| `scripts/pptx_slides.py` | Delete, hide, unhide, move slides completely |
+| `scripts/pptx_build.py` | New deck from a .pptx or .potx template by placeholder idx (needs python-pptx) |
+| `scripts/pptlinks.py`, `scripts/pptpkg.py` | Shared helpers: link checks, safe package reader |
 | `scripts/pptx_sanitize.py` | Share-check and share-ready copy |
 | `scripts/pptx_render.py` | PDF / PNG / legacy conversion with LibreOffice in bubblewrap |
 | `tests/smoke_test.py` | Tests, run with `python tests/smoke_test.py` |
 
-Requirements: Python 3.9+ and lxml. Rendering needs Linux with LibreOffice, bubblewrap and
+Requirements: Python 3.9+ and lxml>=5 (tested 6.1.3); python-pptx 1.0.2 for `pptx_build.py`. Rendering needs Linux with LibreOffice, bubblewrap and
 poppler-utils. See the catalog at https://github.com/skillsaas/index.
 
 ## Trademark

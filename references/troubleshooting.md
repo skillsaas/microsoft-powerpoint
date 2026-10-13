@@ -9,7 +9,7 @@
 | Text sits in the top-left corner or in the wrong font | `placeholders[].inherits_from == "none"` | Change the slide to a layout that has that placeholder, or give the shape its own `a:xfrm` |
 | Text overflows the box after an edit | Render to PNG and look | Shorten text, or let PowerPoint autofit on next open (LibreOffice preview may differ) |
 | "PowerPoint found a problem with content" | `inspect_pptx.py`, then the smoke test `consistent()` on the file | Dangling relationship, missing content type, stale section id, reused slide id; see `presentationml.md` repair list |
-| Deleted slide text still found in the file | `unlisted_slide_parts` in inspect | `pptx_sanitize.py --remove-hidden-slides` |
+| Deleted slide text still found in the file | `unlisted_slide_parts` in inspect | `pptx_sanitize.py --remove-hidden-slides`; delete with `pptx_slides.py --delete` next time |
 | Chart shows new numbers but "Edit Data" shows old | Was only the XML cache edited? | `chart.replace_data()` |
 | Video does not play on another computer | `media[].linked == true` | Embed the media (Insert > Video > This Device) or ship the file with the deck |
 | PNG count differs from slide count | Hidden slides | Expected: renders skip hidden slides; map with `inspect_pptx.py` |
@@ -19,3 +19,9 @@
 | Exit 3 "duplicate zip entry" or caps | | Do not process; tell the user the file looks malformed |
 | `--check-clean` still fails after `--all` | `remaining` | Report each item; something the scripts cannot remove needs PowerPoint (Inspect Presentation) |
 | A .pptm saved as .pptx will not open | Main content type still macro-enabled | `pptx_sanitize.py --remove-macros` writes the right type and requires the .pptx extension |
+| A link stopped working after deleting a slide | `pptx_slides.py` `changes`: "link to removed slide" | Expected: links to a deleted slide are removed, text kept. Relink in PowerPoint if wanted |
+| `pptx_build.py` exit 1 "no placeholder idx" | `--list-layouts TEMPLATE` | Use an idx that layout has, or another layout |
+| Built slides lack date, footer, slide number | Layout has idx 10 to 12, slide does not | python-pptx does not copy them; Insert > Header & Footer in PowerPoint |
+| `mismatched-link` on a link the user trusts | `links[]` `mismatch` and `text` (`--show-targets` for the target) | Ask; keep it by not using `--remove-active`, or fix the text to show the real site |
+| Render exit 1 or 3 on a big deck | `--memory-mb`, `--timeout` | Retry once with `--memory-mb 8192 --timeout 600`; otherwise export from PowerPoint |
+| "OUT must end in .pptx/.pptm" | Package type vs extension | Use the extension the error names; `--remove-macros` to go from .pptm to .pptx |

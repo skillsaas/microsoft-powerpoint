@@ -516,6 +516,7 @@ def t_h2():
     acts = [(r["part"], r["detail"]) for r in d["risks"] if r["risk"] == "action"]
     assert ("ppt/slideMasters/slideMaster1.xml", "runs a program when clicked") in acts, acts
     assert ("ppt/notesSlides/notesSlide1.xml", "link scheme javascript") in acts, acts
+    assert "notes of slide 1" in [r["where"] for r in d["risks"] if r["risk"] == "action"]
     out = tmp("hostile2-clean.pptm")
     rc, d, o = run("pptx_sanitize.py", p, out, "--remove-active", "--json")
     assert rc == 0, o

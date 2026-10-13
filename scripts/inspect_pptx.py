@@ -78,8 +78,20 @@ def xml_part_names(pkg):
 
 
 def part_label(pkg, part):
+    """Readable place: "slide 4" (show position), "notes of slide 1", "master slideMaster1.xml"."""
     if not part:
         return "package"
+    if not hasattr(pkg, "_show_pos"):
+        pkg._show_pos = {s["part"]: s["index"] for s in pkg.slides()}
+        pkg._notes_of = {}
+        for sp, i in pkg._show_pos.items():
+            for r in pkg.rels(sp):
+                if r["type"].endswith("/notesSlide") and not r["external"]:
+                    pkg._notes_of[r["part"]] = i
+    if part in pkg._show_pos:
+        return "slide %d" % pkg._show_pos[part]
+    if part in pkg._notes_of:
+        return "notes of slide %d" % pkg._notes_of[part]
     for prefix, label in (("ppt/slides/", "slide"), ("ppt/slideLayouts/", "layout"),
                           ("ppt/slideMasters/", "master"), ("ppt/notesSlides/", "notes"),
                           ("ppt/notesMasters/", "notes master"), ("ppt/handoutMasters/", "handout master"),
