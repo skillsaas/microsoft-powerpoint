@@ -391,6 +391,17 @@ def t_ext():
     assert "ppt/vbaProject.bin" not in zipfile.ZipFile(tmp("nomacro.pptx")).namelist()
 
 
+@test("sanitize: without --remove-macros a .pptm stays .pptm with its vbaProject.bin unchanged")
+def t_keep_macro():
+    src = threat_deck(tmp("threat-g.pptm"))
+    out = tmp("kept.pptm")
+    rc, d, o = run("pptx_sanitize.py", src, out, "--remove-notes", "--remove-comments", "--json")
+    assert rc == 0 and d["kind"] == "pptm", o
+    assert zipfile.ZipFile(out).read("ppt/vbaProject.bin") == zipfile.ZipFile(src).read("ppt/vbaProject.bin")
+    rc, d, o = run("pptx_sanitize.py", out, "--check-clean", "--json")
+    assert rc == 1 and "vba-macros" in {r["risk"] for r in d["residue"]}, o
+
+
 @test("sanitize: removing hidden slides keeps sections and links consistent")
 def t_hidden():
     out = tmp("nohidden.pptx")
