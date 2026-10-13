@@ -5,9 +5,10 @@ Usage:
   python pptx_slides.py IN OUT [--delete 3,5-6] [--hide 2] [--unhide 4] [--move FROM:TO ...]
                         [--expect-slides N] [--dry-run] [--force] [--json]
 
-Numbers are 1-based positions in show order (p:sldIdLst) as inspect_pptx.py prints them, all
-taken from the input deck before any change. Order of work: hide/unhide, then delete, then
-moves applied left to right on the result (--move 5:1 puts the slide that was 5th first).
+Numbers are 1-based positions in show order (p:sldIdLst) as inspect_pptx.py prints them.
+--delete, --hide and --unhide use the input deck's numbers. --move FROM:TO uses the order after
+the deletes and after earlier moves, left to right. To avoid counting, delete in one run and
+move in a second run on its output.
 
 Delete is complete: the sldId, the presentation relationship, section and custom show entries,
 links from other slides, notes or masters that jump to it, the slide part, and parts only it

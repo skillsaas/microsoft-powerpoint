@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Rebuild tests/fixtures/*.pptx. Developer tool only: needs python-pptx and XlsxWriter.
 
-The smoke tests use the committed fixtures and never need python-pptx. Run this only when a
+Writes to a temp folder unless --write is given. The smoke tests use a copy of the committed fixtures and never need python-pptx. Run this only when a
 fixture must change, then inspect the result and commit it.
 
 deck.pptx (4 slides, two sections "Intro" and "Data"):
@@ -102,12 +102,17 @@ def patch(tmp, out):
 
 
 if __name__ == "__main__":
-    os.makedirs(HERE, exist_ok=True)
-    tmp = os.path.join(HERE, ".tmp.pptx")
+    # Writes to a temp folder unless --write is given, so a stray run cannot replace the
+    # tracked fixture. Compare the temp output with inspect_pptx.py first.
+    import sys
+    import tempfile
+    dest = HERE if "--write" in sys.argv else tempfile.mkdtemp(prefix="pptx-fixture-")
+    os.makedirs(dest, exist_ok=True)
+    tmp = os.path.join(dest, ".tmp.pptx")
     build(tmp)
-    out = os.path.join(HERE, "deck.pptx")
+    out = os.path.join(dest, "deck.pptx")
     if os.path.exists(out):
         os.unlink(out)
     patch(tmp, out)
     os.unlink(tmp)
-    print("wrote", out)
+    print("wrote", out, "" if dest == HERE else "(temp; pass --write to replace the tracked fixture)")

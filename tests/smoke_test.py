@@ -645,7 +645,7 @@ def order(path):
     return [s["title"] for s in d["slides"]], d
 
 
-@test("slides: delete, move, hide, unhide; sections stay consistent; opens")
+@test("slides: delete, move, hide, unhide; sections and custom shows stay consistent; opens")
 def t_slides():
     out = tmp("sl.pptx")
     rc, d, o = run("pptx_slides.py", FIX, out, "--delete", "2", "--move", "3:1", "--expect-slides", "3", "--json")
@@ -661,6 +661,15 @@ def t_slides():
     assert rc == 0, o
     _, d2 = order(out2)
     assert [s["hidden"] for s in d2["slides"]][:2] == [True, False], d2["slides"]
+    cs = mutate(tmp("custshow.pptx"), edits={"ppt/presentation.xml": [(b"<p:defaultTextStyle>",
+        b'<p:custShowLst><p:custShow name="Short" id="0"><p:sldLst><p:sld r:id="rId9"/><p:sld r:id="rId11"/>'
+        b'</p:sldLst></p:custShow></p:custShowLst><p:defaultTextStyle>')]})
+    out3 = tmp("custshow-out.pptx")
+    rc, _, o = run("pptx_slides.py", cs, out3, "--delete", "2", "--json")
+    assert rc == 0, o
+    pres = zipfile.ZipFile(out3).read("ppt/presentation.xml")
+    assert b'r:id="rId9"' not in pres and b'r:id="rId11"' in pres, "custom show entry for the deleted slide must go"
+    assert consistent(out3) and opens(out3)
 
 
 @test("slides: refuses deleting every slide, bad numbers, --expect-slides mismatch; --dry-run writes nothing")
