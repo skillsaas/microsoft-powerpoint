@@ -43,6 +43,13 @@ Try it: `python scripts/inspect_pptx.py tests/fixtures/deck.pptx`, then `python 
 Requirements: Python 3.9+ and lxml>=5 (tested 6.1.3); python-pptx 1.0.2 for `pptx_build.py`. Rendering needs Linux with LibreOffice, bubblewrap and
 poppler-utils. See the catalog at https://github.com/skillsaas/index.
 
+## Status and maintenance
+
+Version 0.1.2, pre-release: not on npm yet and not run on macOS or Windows. Each version is
+reviewed by a panel of people and AI agents before the next; CHANGELOG.md lists what changed and
+why. Versions follow semver; until 1.0, a minor bump may change script flags or JSON fields, and
+the CHANGELOG says so. Run `python tests/smoke_test.py` after install to check your setup.
+
 ## Trademark
 Unofficial. Not affiliated with, endorsed by or sponsored by Microsoft. Microsoft and
 PowerPoint are trademarks of the Microsoft group of companies.

@@ -23,6 +23,7 @@ Fixes from review round 2. Not published.
 - The unsandboxed LibreOffice test is named as a positive control, never to copy.
 - Self-check: `tests/smoke_test.py` and the fixture ship in the package; skill.json gains
   `keywords` and `selfcheck`.
+- README has a status and maintenance note.
 - Tests: 53 (was 45).
 
 ## 0.1.1 (2026-10-13)
