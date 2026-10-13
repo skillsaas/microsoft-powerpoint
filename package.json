@@ -1,0 +1,61 @@
+{
+  "name": "microsoft-powerpoint",
+  "version": "0.1.0",
+  "description": "Agent skill (SKILL.md) for Microsoft PowerPoint: inspect, edit, render and safely share .pptx/.pptm/.ppsx/.potx decks. Covers slide masters, layouts and placeholders, python-pptx limits, charts with embedded workbooks, notes, sections, hidden slides, media, LibreOffice rendering in a sandbox, VBA, Office.js and Microsoft Graph. Includes hardened inspect, split-run replace, sanitize/share-check and sandboxed render scripts (Python, lxml).",
+  "license": "MIT",
+  "author": "Ali Tanveer",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/skillsaas/microsoft-powerpoint.git"
+  },
+  "homepage": "https://github.com/skillsaas/microsoft-powerpoint#readme",
+  "bugs": {
+    "url": "https://github.com/skillsaas/microsoft-powerpoint/issues"
+  },
+  "keywords": [
+    "agent-skill",
+    "agent-skills",
+    "skill-md",
+    "SKILL.md",
+    "ai-agent",
+    "claude-code",
+    "cursor",
+    "codex",
+    "gemini-cli",
+    "powerpoint",
+    "microsoft-powerpoint",
+    "pptx",
+    "pptm",
+    "ppsx",
+    "potx",
+    "ppt",
+    "presentation",
+    "slides",
+    "presentationml",
+    "ooxml",
+    "python-pptx",
+    "slide-master",
+    "speaker-notes",
+    "libreoffice",
+    "office-js",
+    "vba",
+    "microsoft-graph",
+    "sanitize",
+    "metadata",
+    "bubblewrap"
+  ],
+  "files": [
+    "SKILL.md",
+    "skill.json",
+    "AGENTS.md",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "references/",
+    "scripts/*.py",
+    "scripts/requirements.txt"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

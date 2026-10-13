@@ -1,0 +1,49 @@
+{
+  "name": "microsoft-powerpoint",
+  "version": "0.1.0",
+  "description": "Use when reading, creating, editing, rendering, cleaning or automating Microsoft PowerPoint decks (.pptx, .pptm, .ppsx, .potx, .ppt, .odp): find and replace that misses words split across runs, python-pptx limits (no slide delete, reorder or hidden flag, text setter drops formatting), slide masters, layouts and placeholder inheritance, charts with embedded Excel workbooks, speaker notes, sections, hidden slides, media, animations and transitions, slide previews or PDF export with LibreOffice, VBA, Office.js PowerPoint API or Microsoft Graph automation, and safe handling of untrusted or outgoing decks (macros, OLE objects, linked pictures and media, click actions that run programs, comments, notes, hidden slides and metadata before sharing). Not needed for Google Slides or Keynote files that never become .pptx.",
+  "entry": "SKILL.md",
+  "skill_md_url": "https://raw.githubusercontent.com/skillsaas/microsoft-powerpoint/main/SKILL.md",
+  "repository": "https://github.com/skillsaas/microsoft-powerpoint",
+  "license": "MIT",
+  "platforms": {
+    "scripts": "any OS with Python 3.9+ and lxml",
+    "pptx_render.py": "Linux only (bubblewrap); refuses elsewhere by design"
+  },
+  "requires": {
+    "python": ">=3.9",
+    "pip": [
+      "lxml"
+    ],
+    "pip_optional": [
+      "python-pptx"
+    ],
+    "system_optional": [
+      "libreoffice-impress",
+      "bubblewrap",
+      "poppler-utils"
+    ]
+  },
+  "published": {
+    "npm": false,
+    "github": false
+  },
+  "verification": {
+    "tested_on_box": [
+      "scripts/*.py (tests/smoke_test.py)",
+      "references/extraction.md comparison",
+      "references/python-pptx.md recipes (python-pptx 1.0.2)",
+      "LibreOffice 25.2.3.2 in bwrap (render canaries)"
+    ],
+    "documented_not_executed": [
+      "references/automation.md (Office.js names checked against @types/office-js 1.0.611; Graph and VBA against Microsoft Learn; no live PowerPoint or tenant run)"
+    ]
+  },
+  "third_party_licenses": {
+    "lxml": "BSD-3-Clause",
+    "python-pptx": "MIT",
+    "libreoffice-impress": "MPL-2.0",
+    "bubblewrap": "LGPL-2.0-or-later",
+    "poppler-utils": "GPL-2.0-or-later"
+  }
+}
